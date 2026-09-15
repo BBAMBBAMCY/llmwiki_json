@@ -2,7 +2,9 @@
 
 이 Mac 의 Codex 와 Claude Code 가 **모든 질문을 처리하기 전에** `llmwiki_json` 정본에서
 관련 근거를 찾아 프롬프트에 붙인다. 구현은 `scripts/llmwiki_context.py` 하나이고,
-두 클라이언트 모두 `UserPromptSubmit` hook 으로 같은 실행 파일을 부른다.
+두 클라이언트 모두 `UserPromptSubmit` hook 으로 같은 실행 파일을 부른다. `always` 로
+고정한 항목은 그 외에도 세션이 시작·재개·clear 되거나 컴팩트로 컨텍스트가 비워질 때
+(`SessionStart` hook)마다 같은 실행 파일이 한 번 더 낸다 — [아래](#세션-시작컴팩트-직후에도-나간다).
 
 ## 동작
 
@@ -111,6 +113,34 @@ P 옛-정책 concept 2026-07-01 sup→폐기-icd-코드
 - 고정한 page 가 검색에도 걸리면 중복으로 다시 싣지 않는다
 - 검색이 아무것도 못 찾아도 고정분은 나간다 — 그것이 '항상' 의 뜻이다
 - 설정 파일이 없거나 slug 를 못 찾으면 아무것도 고정하지 않는다
+
+### 세션 시작·컴팩트 직후에도 나간다
+
+`UserPromptSubmit` 은 질문이 있을 때만 온다 — 세션을 막 열었을 때나, 컨텍스트가 컴팩트로
+비워진 직후에는 아직 다음 질문이 없다. `SessionStart` hook(Claude Code 가 `source` 필드로
+`startup`·`resume`·`clear`·`compact`·`fork` 를 구분해 보낸다)에서도 같은 실행 파일을 불러
+`always` 목록을 검색과 무관하게 낸다 — 세션이 새로 열리거나 컴팩트로 컨텍스트가 비워져도
+고정 항목만은 곧바로 다시 채워진다.
+
+```
+SessionStart hook (source: startup / resume / clear / compact / fork)
+  └─ /usr/bin/python3 scripts/llmwiki_context.py hook   # 같은 실행 파일, stdin 의
+       hook_event_name 으로 분기한다. 프롬프트가 없으므로 검색은 하지 않고
+       always 목록만 렌더한다.
+       └─ {"hookSpecificOutput":{"hookEventName":"SessionStart",
+                                  "additionalContext":"<llmwiki-context>…"}}
+```
+
+- 예산은 `UserPromptSubmit` 과 같은 `always_max_bytes` 상한을 쓴다 — 세션이 늘어난다고
+  주입량이 커지지 않는다
+- `PostCompact` 는 쓰지 않는다 — Claude Code 공식 문서상 이 이벤트는 압축 요약을
+  로깅하는 용도이고 `hookSpecificOutput.additionalContext` 를 지원하지 않는다. 컴팩트
+  직후 재주입은 `SessionStart` 를 `source: "compact"` 로 받는 것이 문서화된 경로다
+- 이 저장소의 `./scripts/install.sh` 는 현재 `UserPromptSubmit` 만 자동으로 등록한다.
+  `SessionStart` 도 같은 명령으로 받고 싶으면, 설치된 `hooks.UserPromptSubmit` 항목과
+  같은 `{"type": "command", "command": "<같은 명령>", "timeout": 10}` 을
+  `~/.claude/settings.json`(Claude Code) 또는 `~/.codex/hooks.json`(Codex) 의
+  `hooks.SessionStart` 배열에 그대로 추가하면 된다
 
 ### 무주입 문턱은 옵션이다
 

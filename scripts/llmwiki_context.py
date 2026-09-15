@@ -67,6 +67,7 @@ ENV_LOG = "LLMWIKI_CONTEXT_LOG"
 ENV_STATE_DIR = "LLMWIKI_STATE_DIR"
 
 HOOK_EVENT = "UserPromptSubmit"
+SESSION_HOOK_EVENT = "SessionStart"
 
 # 주입 예산 기본값. 매 프롬프트마다 붙으므로 보수적으로 잡는다.
 MAX_BYTES = 6000
@@ -867,7 +868,8 @@ def always_budget(root: Path, *, total: int = MAX_BYTES) -> int:
 
 
 def render_always(root: Path, *, max_bytes: int | None = None,
-                  max_blocks: int = ALWAYS_MAX_BLOCKS, total: int = MAX_BYTES) -> str:
+                  max_blocks: int = ALWAYS_MAX_BLOCKS, total: int = MAX_BYTES,
+                  heading: str = "이 사람과 일하는 방식이다. 매 질문에 함께 붙는다:") -> str:
     """고정 page 를 짧게. 요약과 앞쪽 block 몇 줄만 싣고 나머지는 검색에 맡긴다."""
     slugs = always_slugs(root)
     if not slugs:
@@ -905,9 +907,8 @@ def render_always(root: Path, *, max_bytes: int | None = None,
         lines.extend(f"  · {text}" for text in body)
     if not lines:
         return ""
-    head = "이 사람과 일하는 방식이다. 매 질문에 함께 붙는다:"
     while lines:
-        text = "\n".join([head, *lines])
+        text = "\n".join([heading, *lines])
         if len(text.encode("utf-8")) <= budget:
             return text
         lines.pop()
@@ -1131,6 +1132,32 @@ def run_hook(root: Path, stdin_text: str, *, max_bytes: int, max_tokens: int,
     if not isinstance(payload, dict):
         stats["skip"] = "non-object-stdin"
         return "", stats
+
+    event = str(payload.get("hook_event_name") or HOOK_EVENT)
+    stats["event"] = event
+    if event == SESSION_HOOK_EVENT:
+        # SessionStart 는 source 가 startup/resume/clear/compact/fork 중 하나이고 질문이 없다.
+        # 공식 문서가 컴팩트 직후 재주입 경로로 지목하는 것도 이 이벤트다(PostCompact 는
+        # additionalContext 를 지원하지 않는, 요약 로깅 전용 이벤트라 쓰지 않는다).
+        # 검색할 프롬프트가 없으므로 고정(`always`) 항목만, 검색과 무관하게 낸다.
+        stats["source"] = payload.get("source")
+        stats["cwd"] = payload.get("cwd")
+        # total=(검색 몫까지 포함한 예산)로 줘야 always_budget() 이 tools/config/context.json 의
+        # always_max_bytes 상한을 그대로 적용한다. max_bytes= 로 주면 그 상한을 건너뛰고
+        # hook 전체 예산까지 늘어난다 — 이 기능의 목적(과다 주입 억제)에 반한다.
+        preamble = render_always(root, total=max_bytes,
+                                 heading="세션이 막 시작됐거나(startup/resume/clear) 방금 "
+                                         "컴팩트됐다(compact). 개인 지식 위키 고정 항목이다:")
+        text = render_always_only(root, preamble, max_bytes=max_bytes, max_tokens=max_tokens)
+        if not text:
+            stats["skip"] = "no-always"
+            return "", stats
+        stats["injected"] = True
+        stats["bytes"] = len(text.encode("utf-8"))
+        stats["est_tokens"] = est_tokens(text)
+        out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text},
+               "suppressOutput": True}
+        return json.dumps(out, ensure_ascii=False), stats
 
     prompt = hook_prompt(payload)
     stats["client"] = "codex" if "turn_id" in payload else "claude"
@@ -1584,6 +1611,10 @@ def guide_body(root: Path, python: str | None = None) -> str:
         "- 질문마다 `UserPromptSubmit` hook 이 관련 근거를 `<llmwiki-context>` 블록으로 "
         "자동 주입한다. 그 안의 page/block ID 를 근거로 답한다. 주소만 온 경우도 있는데, "
         "그때는 본문이 실리지 않았다는 뜻이니 아래 조회로 필요한 block 만 가져온다.",
+        "- `tools/config/context.json` 의 `always` 목록은 검색 결과와 무관하게 매번 "
+        "함께 붙고, `SessionStart` hook(source: startup·resume·clear·**compact**)에서도 "
+        "같은 목록을 낸다 — 세션이 새로 열리거나 컴팩트로 컨텍스트가 비워져도 그 목록만은 곧바로 "
+        "다시 채워진다.",
         "- 조회는 언제나 **필요한 object 단위**로 한다. page 전체 JSON 을 통째로 읽지 않는다:",
         f"  - block 목차: `{interpreter} {script} get <slug>`",
         f"  - block 하나: `{interpreter} {script} get <slug> --block <block id>`",
