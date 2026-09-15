@@ -94,6 +94,12 @@ class CliTest(WorkspaceCase):
     def test_query_respects_limit(self) -> None:
         self.assertEqual(len(self.cli("query", "문단 값", "--limit", "1").stdout.splitlines()), 1)
 
+    def test_query_matches_spaced_title_to_hyphen_slug(self) -> None:
+        self.write_pages([make_page("alpha-platform", "# Alpha Platform\n\n플랫폼 본문.\n",
+                                    projects=["alpha"], tags=["project"])], name="alpha-platform.json")
+        rows = [json.loads(line) for line in self.cli("query", "alpha platform").stdout.splitlines()]
+        self.assertEqual(rows[0]["id"], "page:alpha-platform")
+
     def test_ingest_dry_run_then_real(self) -> None:
         source = self.write_raw("note.md", "# Note\n\n[[alpha]]\n")
         dry = json.loads(self.cli("ingest", str(source), "--dry-run").stdout)

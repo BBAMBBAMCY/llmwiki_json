@@ -76,7 +76,9 @@ class IngestTest(WorkspaceCase):
 
     def test_rejects_credentials(self) -> None:
         for secret in ("password: hunter2", "API_KEY=sk-abc123", "access_token: ghp_x",
-                       "connection_string=postgres://u:p@h/db"):
+                       "connection_string=postgres://u:p@h/db",
+                       "Authorization: Bearer abcdefghijklmnop",
+                       "sk-abcdefghijklmnopqrstuvwxyz0123"):
             path = self.write_raw("leak.md", f"# 제목\n\n{secret}\n")
             with self.assertRaisesRegex(llmwiki.WikiError, "보안정보"):
                 llmwiki.ingest(self.ws, path)

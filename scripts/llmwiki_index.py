@@ -44,11 +44,18 @@ import math
 import os
 import re
 import sqlite3
+import sys
 import unicodedata
 from array import array
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    from . import llmwiki_text as T
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import llmwiki_text as T  # type: ignore[no-redef]
 
 SCHEMA_VERSION = "2"
 DB_NAME = "search.sqlite"
@@ -107,27 +114,11 @@ _TRIM = re.compile(r"[.\-:/]+$")
 _SPLIT = re.compile(r"[_.\-:/]+")
 _TABLE_SEP = re.compile(r"^\|?[\s\-:|]+\|?$")
 _SENT = re.compile(r"(?<=[.!?。]) |(?<=다\.) ")
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-LINK_SEPARATOR = re.compile(r"[\s_]+")
-WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]")
-
-# 이름이 붙은 자격증명: `password: x`, `"api_key": "x"`, `--token=x` 등.
-SECRET = re.compile(r"(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|"
-                    r"secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)"
-                    r"\"?\s*[:=]\s*\"?[^\s,;\"']+")
-SECRET_MASK = r"\1: (접속 정보 생략)"
-# 이름 없이 값만 나와도 자격증명인 것들 — 인증 헤더·PEM·알려진 토큰 접두·URL 계정·CLI 인자.
-SECRET_EXTRA = (
-    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._\-+/=]{8,}"), r"\1 (접속 정보 생략)"),
-    (re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"),
-     "(접속 정보 생략)"),
-    (re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|"
-                r"xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[A-Za-z0-9_\-]{20,})"),
-     "(접속 정보 생략)"),
-    (re.compile(r"\b([a-z][a-z0-9+.\-]*://)[^\s/:@]+:[^\s/@]+@"), r"\1(접속 정보 생략)@"),
-    (re.compile(r"(?i)(--?(?:password|passwd|token|api[_-]?key|secret|auth)\b)\s+\S+"),
-     r"\1 (접속 정보 생략)"),
-)
+LINK_SEPARATOR = T.LINK_SEPARATOR
+WIKILINK = T.WIKILINK
+SECRET = T.SECRET
+SECRET_MASK = T.SECRET_MASK
+SECRET_EXTRA = T.SECRET_EXTRA
 
 GRAPH_HEAD = (
     "<llmwiki-context v=3>\n"
@@ -169,31 +160,24 @@ CREATE TABLE adj(src INTEGER, dst INTEGER, w REAL, own_block TEXT, PRIMARY KEY(s
 TABLES = ("meta", "page", "lookup", "blk", "post", "link", "adj")
 
 
-# ------------------------------------------------------------------ 공용 유틸
-def norm(value: Any) -> str:
-    return unicodedata.normalize("NFC", str(value or "")).strip()
+# ------------------------------------------------------------------ 공용 유틸 (llmwiki_text 가 정본)
+norm = T.norm
+canonical = T.canonical
+link_key = T.link_key
+refs_in = T.refs_in
+implied_links = T.implied_links
+redact = T.redact
+block_text = T.block_text
+unresolved = T.unresolved
 
 
 def norm_ws(text: Any) -> str:
     return " ".join(str(text or "").split())
 
 
-def canonical(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def page_sha(page: dict[str, Any]) -> str:
-    """`index/map.json` 의 `sha256` 과 같은 식 — llmwiki.sha(canonical(page))."""
-    return hashlib.sha256(canonical(page).encode("utf-8")).hexdigest()
-
-
-def redact(text: str) -> str:
-    """자격증명처럼 보이는 값은 색인에도, 출력에도 남기지 않는다. 제어문자도 지운다."""
-    text = _CONTROL.sub("", str(text or ""))
-    text = SECRET.sub(SECRET_MASK, text)
-    for pattern, mask in SECRET_EXTRA:
-        text = pattern.sub(mask, text)
-    return text
+    """`index/map.json` 의 `sha256` 과 같은 식 — sha(canonical(page))."""
+    return T.sha(canonical(page))
 
 
 def est_tokens(text: str) -> int:
@@ -227,65 +211,6 @@ def tokenize(text: str) -> list[str]:
 
 
 STOP_2G: frozenset[str] = frozenset(t for w in STOP_WORDS for t in tokenize(w))
-
-
-def block_text(block: dict[str, Any]) -> str:
-    """block 의 검색·표시용 본문. data.text/statement 가 있으면 그것, 없으면 source_text."""
-    data = block.get("data") or {}
-    if isinstance(data, dict):
-        for key in ("text", "statement"):
-            if isinstance(data.get(key), str) and data[key].strip():
-                return data[key]
-    text = block.get("source_text")
-    return text if isinstance(text, str) else ""
-
-
-def unresolved(block: dict[str, Any]) -> bool:
-    resolution = block.get("resolution")
-    status = resolution.get("status") if isinstance(resolution, dict) else None
-    return block.get("kind") == "conflict" and status != "resolved"
-
-
-def link_key(value: str) -> str:
-    """대소문자·공백·`page:` 접두를 무시하는 비교 키 (llmwiki.link_key 와 같다)."""
-    text = norm(value).casefold()
-    if text.startswith("page:"):
-        text = text[5:]
-    return LINK_SEPARATOR.sub("-", text).strip("-")
-
-
-def refs_in(text: str) -> list[str]:
-    return sorted({norm(m.group(1)) for m in WIKILINK.finditer(text)})
-
-
-def implied_links(page: dict[str, Any]) -> list[dict[str, Any]]:
-    """선언된 links + block 본문의 [[위키링크]] + sources 의 page 참조 (llmwiki.implied_links 와 같다)."""
-    links = [dict(link) for link in page.get("links") or [] if norm(link.get("target"))]
-    seen = {(link_key(link["target"]), link.get("kind", "wiki")) for link in links}
-
-    def add(target: str, kind: str, block_id: str = "") -> None:
-        key = (link_key(target), kind)
-        if not key[0] or key in seen:
-            return
-        seen.add(key)
-        link = {"target": norm(target), "kind": kind}
-        if block_id:
-            link["block_id"] = block_id
-        links.append(link)
-
-    blocks = page.get("blocks") or {}
-    for bid in page.get("block_order") or list(blocks):
-        block = blocks.get(bid) or {}
-        refs = block.get("refs")
-        if refs is None:
-            refs = refs_in(str(block.get("source_text", "")))
-        for ref in refs:
-            add(ref, "wiki", bid)
-    for ref in page.get("sources") or []:
-        prefix, sep, rest = norm(ref).partition(":")
-        if sep and rest and prefix.lower() not in {"user", "raw"}:
-            add(rest, "source")
-    return links
 
 
 def heading_paths(page: dict[str, Any]) -> dict[str, str]:

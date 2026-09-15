@@ -612,12 +612,15 @@ class CliAndWatcherTest(IncrementalCase):
         self.assertIn("debounceMs = 250", source)
         vite = (REPO / "viewer" / "vite.config.ts").read_text(encoding="utf-8")
         self.assertIn("schedule(path)", vite)
+        self.assertIn("/api/query", vite)
+        self.assertIn("runWikiQuery", vite)
         bun = shutil.which("bun")
         if not bun:
             self.skipTest("bun 없음")
         script = ("const m = await import(%r); const a = m.buildArgs(['/w/a.json', '/w/b.json']); "
                   "const b = m.buildArgs(); const c = m.changedPaths(new Map([['x','1:1'],['y','1:1']]), "
-                  "new Map([['x','2:1'],['z','1:1']])); console.log(JSON.stringify({a, b, c}));"
+                  "new Map([['x','2:1'],['z','1:1']])); const q = m.queryArgs('alpha platform', 8); "
+                  "console.log(JSON.stringify({a, b, c, q}));"
                   % str(REPO / "viewer" / "scripts" / "wiki-data.ts"))
         proc = subprocess.run([bun, "-e", script], capture_output=True, text=True, timeout=60)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -625,6 +628,7 @@ class CliAndWatcherTest(IncrementalCase):
         self.assertEqual(out["a"], ["scripts/llmwiki.py", "build", "--changed", "/w/a.json", "/w/b.json"])
         self.assertEqual(out["b"], ["scripts/llmwiki.py", "build"])
         self.assertEqual(out["c"], ["x", "y", "z"])
+        self.assertEqual(out["q"], ["scripts/llmwiki.py", "query", "alpha platform", "--limit", "8"])
 
 
 # --------------------------------------------------------------------------- 공용 순수 함수

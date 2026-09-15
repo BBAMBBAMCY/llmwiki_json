@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip
 import { primaryTag } from "./lib/colors";
 import { linkKey } from "./lib/render";
 import { useTheme } from "./lib/theme";
-import type { ColorBy, GraphCanvasHandle, GraphPayload, GraphSettings, Stats, WikiPage } from "./types";
+import type { ColorBy, GraphCanvasHandle, GraphPayload, GraphSettings, QueryHit, Stats, WikiPage } from "./types";
 
 const Graph3DCanvas = lazy(() => import("./components/Graph3DCanvas"));
 const EMPTY: GraphPayload = {schema_version:"1.0",nodes:[],edges:[],groups:{project:{},type:{},tag_palette:[]}};
@@ -39,6 +39,7 @@ export default function App() {
   const [data,setData]=useState<GraphPayload>(EMPTY);
   const [stats,setStats]=useState<Stats>({pages:0,blocks:0,edges:0,unresolved_conflicts:0});
   const [query,setQuery]=useState("");
+  const [hits,setHits]=useState<QueryHit[]>([]);
   const [colorBy,setColorBy]=useState<ColorBy>("project");
   const [enabledGroups,setEnabledGroups]=useState<Set<string>>(new Set());
   const [showOrphans,setShowOrphans]=useState(true);
@@ -93,13 +94,25 @@ export default function App() {
     const handler=(event:KeyboardEvent)=>{if(event.key==="/"&&!(event.target instanceof HTMLInputElement)){event.preventDefault();setSidebarOpen(true);setTimeout(()=>document.querySelector<HTMLInputElement>(".search-box input")?.focus(),40)}if(event.key==="Escape"){setSelectedId(null);setSidebarOpen(false)}};
     addEventListener("keydown",handler);return()=>removeEventListener("keydown",handler);
   },[]);
+  useEffect(()=>{
+    const q=query.trim();
+    if(!q){setHits([]);return;}
+    const ac=new AbortController();
+    const timer=setTimeout(()=>{
+      void fetch(`/api/query?q=${encodeURIComponent(q)}&limit=50`,{signal:ac.signal,cache:"no-store"})
+        .then(r=>{if(!r.ok)throw new Error(`query ${r.status}`);return r.json() as Promise<{hits?:QueryHit[]}>})
+        .then(body=>setHits(Array.isArray(body.hits)?body.hits:[]))
+        .catch(error=>{if(error instanceof DOMException&&error.name==="AbortError")return;reportDataError(error);setHits([]);});
+    },150);
+    return()=>{clearTimeout(timer);ac.abort();};
+  },[query]);
+  const matches=useMemo(()=>hits.flatMap(h=>{const node=data.nodes.find(n=>n.id===h.id);return node?[node]:[];}).slice(0,8),[hits,data.nodes]);
   const visibleIds=useMemo(()=>new Set(data.nodes.filter(node=>{
     const group=colorBy==="project"?node.group:colorBy==="type"?node.type:primaryTag(node);
     const groupEnabled=colorBy==="tag"?true:enabledGroups.has(group);
     if(!groupEnabled)return false;if(!showOrphans&&node.orphan)return false;if(conflictsOnly&&node.unresolved_conflicts===0)return false;
-    if(query.trim()&&!`${node.label} ${node.slug} ${node.summary} ${node.tags.join(" ")} ${node.projects.join(" ")}`.toLowerCase().includes(query.toLowerCase()))return false;
     return true;
-  }).map(n=>n.id)),[data,colorBy,enabledGroups,showOrphans,conflictsOnly,query]);
+  }).map(n=>n.id)),[data,colorBy,enabledGroups,showOrphans,conflictsOnly]);
   const select=useCallback((id:string|null)=>{setSelectedId(id);if(id)setSidebarOpen(false)},[]);
   /* 본문 [[링크]]는 slug 그대로 쓰이기도, 제목이나 다른 표기로 쓰이기도 한다 — 그래프 edge 와 같은 규칙으로 찾는다. */
   const navigateSlug=(target:string)=>{
@@ -112,7 +125,7 @@ export default function App() {
 
   return <main className={`app-shell${theme === "dark" ? " dark" : ""}${selectedNode ? " has-inspector" : ""}`}>
     <div className="mobile-topbar"><Button size="icon" variant="ghost" aria-label="그래프 필터 열기" onClick={()=>setSidebarOpen(true)}><Menu/></Button><strong>llmwiki_json</strong><Button size="icon" variant="ghost" aria-label="페이지 검색 열기" onClick={()=>{setSidebarOpen(true);setTimeout(()=>document.querySelector<HTMLInputElement>(".search-box input")?.focus(),30)}}><Search/></Button></div>
-    <Sidebar open={sidebarOpen} setOpen={setSidebarOpen} query={query} setQuery={setQuery} colorBy={colorBy} setColorBy={setColorBy} nodes={data.nodes} visibleIds={visibleIds} enabledGroups={enabledGroups} toggleGroup={toggleGroup} groups={data.groups} showOrphans={showOrphans} setShowOrphans={setShowOrphans} conflictsOnly={conflictsOnly} setConflictsOnly={setConflictsOnly} showColors={showColors} setShowColors={setShowColors} onSelect={select} themeChoice={themeChoice} setThemeChoice={setThemeChoice}/>
+    <Sidebar open={sidebarOpen} setOpen={setSidebarOpen} query={query} setQuery={setQuery} colorBy={colorBy} setColorBy={setColorBy} nodes={data.nodes} matches={matches} visibleIds={visibleIds} enabledGroups={enabledGroups} toggleGroup={toggleGroup} groups={data.groups} showOrphans={showOrphans} setShowOrphans={setShowOrphans} conflictsOnly={conflictsOnly} setConflictsOnly={setConflictsOnly} showColors={showColors} setShowColors={setShowColors} onSelect={select} themeChoice={themeChoice} setThemeChoice={setThemeChoice}/>
     {sidebarOpen&&<button className="backdrop mobile-only" aria-label="필터 닫기" onClick={()=>setSidebarOpen(false)}/>} 
     <section className="graph-stage">
       <div className="canvas-heading"><div><span className="live-dot"/>GRAPH · 3D</div><strong>{visibleIds.size}</strong><span>of {stats.pages} pages</span></div>

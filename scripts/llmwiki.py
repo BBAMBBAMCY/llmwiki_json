@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
 import html
 import json
 import math
@@ -39,15 +38,16 @@ import shutil
 import sqlite3
 import sys
 import time
-import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
 try:  # package import (bench: `from scripts import llmwiki`)
+    from . import llmwiki_text as T
     from . import llmwiki_index as search_index
 except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import llmwiki_text as T  # type: ignore[no-redef]
     import llmwiki_index as search_index  # type: ignore[no-redef]
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -66,16 +66,13 @@ PAGE_DIRS = {
     "home": "", "index": "", "log": "",
 }
 
-WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]")
+WIKILINK = T.WIKILINK
+LINK_SEPARATOR = T.LINK_SEPARATOR
+SECRET = T.SECRET
 # YAML subset used by frontmatter: `key: value`, `- item`, `[a, "b, c"]`.
 META_KEY = re.compile(r"^([^\s:#][^:]*):[ \t]*(.*)$")
 BLOCK_ITEM = re.compile(r"^[ \t]+-[ \t]*(.*)$")
 FLOW_ITEM = re.compile(r"""[ \t]*(?:"([^"]*)"|'([^']*)'|([^,]*))[ \t]*(?:,|$)""")
-# Loose link key: `[[Alpha Platform]]`, `[[alpha_platform]]` and `[[page:alpha-platform]]`
-# all have to find the page whose slug is `alpha-platform`.
-LINK_SEPARATOR = re.compile(r"[\s_]+")
-SECRET = re.compile(r"(?i)(api[_-]?key|access[_-]?token|password|passwd|secret|connection[_-]?string)"
-                    r"\s*[:=]\s*[^\s,;\"']+")
 SOURCE_REF = re.compile(r"^(?:page|source|raw):\S+$|^user:\d{4}-\d{2}-\d{2}$")
 DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 BLOCK_KEEP = re.compile(r"[^a-zA-Z0-9가-힣._-]+")
@@ -94,16 +91,16 @@ LAYOUT_RADIUS = 18.0
 
 
 # --------------------------------------------------------------------------- utils
-def norm(value: Any) -> str:
-    return unicodedata.normalize("NFC", str(value or "")).strip()
-
-
-def sha(text: str, length: int = 64) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
-
-
-def canonical(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+norm = T.norm
+sha = T.sha
+sha_bytes = T.sha_bytes
+canonical = T.canonical
+redact = T.redact
+link_key = T.link_key
+refs_in = T.refs_in
+strip_ref_prefix = T.strip_ref_prefix
+reference_links = T.reference_links
+implied_links = T.implied_links
 
 
 def today() -> str:
@@ -230,10 +227,6 @@ class Workspace:
 
 
 # --------------------------------------------------------------------------- markdown parsing
-def refs_in(text: str) -> list[str]:
-    return sorted({norm(m.group(1)) for m in WIKILINK.finditer(text)})
-
-
 def unquote(value: str) -> str:
     """Strip one matching pair of surrounding quotes — `"a, b"` stays one value."""
     value = value.strip()
@@ -449,39 +442,6 @@ def page_links(page_id: str, blocks: dict[str, Any], order: list[str]) -> list[d
     return links
 
 
-def strip_ref_prefix(ref: str) -> tuple[str, str]:
-    """`source:handbook` -> ('source', 'handbook'); a bare value keeps an empty prefix."""
-    prefix, separator, rest = norm(ref).partition(":")
-    if not separator or not norm(rest):
-        return "", norm(ref)
-    return prefix.lower(), norm(rest)
-
-
-def reference_links(sources: Iterable[str] = (), supersedes: Iterable[str] = (),
-                    related: Iterable[str] = ()) -> list[dict[str, Any]]:
-    """Frontmatter relations become links so evidence is an edge, not just a string.
-
-    `sources: [page:x]` is how a claim points at what backs it. Until these
-    became links the graph only knew about `[[wikilinks]]`, so an ingested
-    page could sit there with no line to the source it was built from.
-    """
-    links: list[dict[str, Any]] = []
-    for kind, refs in (("source", sources), ("supersedes", supersedes), ("related", related)):
-        for ref in refs:
-            prefix, target = strip_ref_prefix(ref)
-            # user:2026-08-19 and raw:notes.md name evidence outside the wiki.
-            if prefix in {"user", "raw"} or not target:
-                continue
-            links.append({"target": target, "label": target, "kind": kind})
-    return links
-
-
-def link_key(value: str) -> str:
-    """Comparison key that ignores case, spacing and the `page:` prefix."""
-    text = norm(value).removeprefix("page:").casefold()
-    return LINK_SEPARATOR.sub("-", text).strip("-")
-
-
 def page_lookup(pages: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Resolve a link target by slug, id or title — slugs always win a tie."""
     pages = list(pages)
@@ -496,39 +456,6 @@ def page_lookup(pages: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         if key:
             lookup.setdefault(key, page)
     return lookup
-
-
-def implied_links(page: dict[str, Any]) -> list[dict[str, Any]]:
-    """Declared links plus everything the page's own content already implies.
-
-    Pages written straight to JSON often carry `[[wikilinks]]` in block text
-    without repeating them in `links`. The graph must not lose those edges
-    just because the array was hand-maintained.
-    """
-    links = [dict(link) for link in page.get("links", []) if norm(link.get("target"))]
-    seen = {(link_key(link["target"]), link.get("kind", "wiki")) for link in links}
-
-    def add(target: str, kind: str, block_id: str | None = None) -> None:
-        key = (link_key(target), kind)
-        if not key[0] or key in seen:
-            return
-        seen.add(key)
-        link = {"target": norm(target), "label": norm(target), "kind": kind}
-        if block_id:
-            link["block_id"] = block_id
-        links.append(link)
-
-    blocks = page.get("blocks") or {}
-    for bid in page.get("block_order", []):
-        block = blocks.get(bid) or {}
-        refs = block.get("refs")
-        if refs is None:
-            refs = refs_in(str(block.get("source_text", "")))
-        for ref in refs:
-            add(ref, "wiki", bid)
-    for link in reference_links(page.get("sources", [])):
-        add(link["target"], link["kind"])
-    return links
 
 
 def summary_from_blocks(blocks: dict[str, Any], order: list[str]) -> str:
@@ -661,10 +588,10 @@ class SchemaValidator:
 
 
 def assert_no_secrets(text: str, label: str) -> None:
-    match = SECRET.search(text)
-    if match:
+    hit = T.secret_hit(text)
+    if hit:
         raise WikiError(
-            f"{label}: 보안정보로 보이는 '{match.group(1)}' 값이 있습니다. "
+            f"{label}: 보안정보로 보이는 '{hit}' 값이 있습니다. "
             "원본을 정리하거나 '(접속 정보 생략)'으로 치환한 뒤 ingest 하세요.")
 
 
@@ -1547,7 +1474,7 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
     except ValueError:
         pass
 
-    before = sha(path.read_bytes().hex())
+    before = sha_bytes(path.read_bytes())
     text = path.read_text(encoding="utf-8")
     assert_no_secrets(text, ws.rel(path))
 
@@ -1605,7 +1532,7 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
     dump(dest, page, pretty=True)
     if moved_from:
         moved_from.unlink(missing_ok=True)
-    if sha(path.read_bytes().hex()) != before:
+    if sha_bytes(path.read_bytes()) != before:
         raise WikiError(f"source {ws.rel(path)} changed during ingest — raw/ must stay immutable")
     append_log(ws, {"action": "ingest", "page_id": page["id"],
                     "source": ws.rel(path), "dest": ws.rel(dest),

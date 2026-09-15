@@ -53,3 +53,12 @@ export interface WikiPage {
 }
 export interface MapPayload { pages: Record<string, {data_url: string; sha256: string; pointer: string; source: string}>; blocks: Record<string, unknown> }
 export interface Stats { pages: number; blocks: number; edges: number; unresolved_conflicts: number }
+export interface QueryHit {
+  score: number;
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  blocks: string[];
+  superseded_by: string | null;
+}

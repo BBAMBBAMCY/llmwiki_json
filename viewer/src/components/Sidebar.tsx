@@ -12,7 +12,7 @@ import { ToggleGroup, ToggleGroupItem } from "./ui/toggle-group";
 
 interface Props {
   open: boolean; setOpen: (value: boolean) => void; query: string; setQuery: (value: string) => void;
-  colorBy: ColorBy; setColorBy: (value: ColorBy) => void; nodes: GraphNode[]; visibleIds: Set<string>;
+  colorBy: ColorBy; setColorBy: (value: ColorBy) => void; nodes: GraphNode[]; matches: GraphNode[]; visibleIds: Set<string>;
   enabledGroups: Set<string>; toggleGroup: (group: string) => void; groups: GroupConfig;
   showOrphans: boolean; setShowOrphans: (value: boolean) => void; conflictsOnly: boolean; setConflictsOnly: (value: boolean) => void;
   showColors: boolean; setShowColors: (value: boolean) => void; onSelect: (id: string) => void;
@@ -35,9 +35,8 @@ function ThemeSwitch({value, onChange}: {value: ThemeChoice; onChange: (next: Th
 }
 
 export default function Sidebar(props: Props) {
-  const {open, setOpen, query, setQuery, colorBy, setColorBy, nodes, visibleIds, enabledGroups, toggleGroup, groups, showOrphans, setShowOrphans, conflictsOnly, setConflictsOnly, showColors, setShowColors, onSelect, themeChoice, setThemeChoice} = props;
+  const {open, setOpen, query, setQuery, colorBy, setColorBy, nodes, matches, visibleIds, enabledGroups, toggleGroup, groups, showOrphans, setShowOrphans, conflictsOnly, setConflictsOnly, showColors, setShowColors, onSelect, themeChoice, setThemeChoice} = props;
   const groupValues = colorBy === "project" ? Object.keys(groups.project) : colorBy === "type" ? [...new Set(nodes.map((n) => n.type))].sort() : [...new Set(nodes.flatMap((n) => n.tags.length ? n.tags : ["untagged"]))].sort();
-  const matches = query.trim() ? nodes.filter((node) => `${node.label} ${node.slug} ${node.summary} ${node.tags.join(" ")}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8) : [];
   const color = (value: string) => colorBy === "project" ? groups.project[value]?.color : colorBy === "type" ? groups.type[value] : groups.tag_palette[hash(value) % groups.tag_palette.length];
   return <aside className={`sidebar ${open ? "is-open" : ""}`} aria-label="그래프 필터">
     <div className="sidebar-head"><div><strong>llmwiki_json</strong><span>Knowledge graph</span></div><div className="sidebar-head-actions"><ThemeSwitch value={themeChoice} onChange={setThemeChoice}/><Button size="icon" variant="ghost" className="mobile-only" onClick={() => setOpen(false)} aria-label="필터 닫기"><X/></Button></div></div>

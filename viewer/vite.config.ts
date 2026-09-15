@@ -3,7 +3,7 @@ import type { Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { resolve } from "node:path";
-import { createWikiData } from "./scripts/wiki-data";
+import { createWikiData, runWikiQuery } from "./scripts/wiki-data";
 
 const projectRoot = resolve(__dirname, "..");
 
@@ -18,6 +18,22 @@ function liveWikiData(): Plugin {
         onBuilt: () => server.ws.send({type: "custom", event: "llmwiki:data", data: {at: Date.now()}}),
       });
       const wikiRoot = resolve(projectRoot, "wiki");
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.startsWith("/api/query")) return next();
+        const url = new URL(req.url, "http://127.0.0.1");
+        try {
+          const body = JSON.stringify(runWikiQuery(
+            projectRoot, url.searchParams.get("q") ?? "", Number(url.searchParams.get("limit") || 50)));
+          res.statusCode = 200;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.setHeader("Cache-Control", "no-store");
+          res.end(body);
+        } catch (error) {
+          res.statusCode = 500;
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          res.end(JSON.stringify({error: error instanceof Error ? error.message : String(error)}));
+        }
+      });
       server.watcher.add(wikiRoot);
       server.watcher.on("all", (_event, path) => {
         if (path.startsWith(wikiRoot) && path.endsWith(".json")) schedule(path);

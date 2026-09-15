@@ -12,7 +12,7 @@ RUN cd viewer && bun install --frozen-lockfile
 
 FROM base AS builder
 
-COPY scripts/llmwiki.py ./scripts/llmwiki.py
+COPY scripts/*.py ./scripts/
 COPY tools/config ./tools/config
 COPY tools/schema ./tools/schema
 COPY wiki ./wiki

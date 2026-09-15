@@ -174,13 +174,7 @@ def env_flag(name: str, fallback: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off", ""}
 
 
-def redact(text: str) -> str:
-    """자격증명처럼 보이는 값은 절대 컨텍스트로 내보내지 않는다.
-
-    이름이 붙은 형태(`password: …`)뿐 아니라 값만 나오는 형태 — 인증 헤더,
-    PEM 블록, 알려진 토큰 접두, URL 에 박힌 계정 — 까지 지운다. 제어문자도 뺀다.
-    """
-    return IDX.redact(text)
+redact = IDX.redact
 
 
 def est_tokens(text: str) -> int:
@@ -282,14 +276,7 @@ def load_corpus(root: Path) -> list[Doc]:
     return docs
 
 
-def block_text(block: dict[str, Any]) -> str:
-    data = block.get("data") or {}
-    if isinstance(data, dict):
-        for key in ("text", "statement"):
-            if isinstance(data.get(key), str) and data[key].strip():
-                return data[key]
-    text = block.get("source_text")
-    return text if isinstance(text, str) else ""
+block_text = IDX.block_text
 
 
 def doc_fields(page: dict[str, Any]) -> dict[str, str]:
@@ -396,10 +383,7 @@ def rank_blocks(doc: Doc, tokens: list[str], idf: dict[str, float],
     return [dict(blocks[bid], id=bid) for bid in order if bid in chosen]
 
 
-def unresolved(block: dict[str, Any]) -> bool:
-    resolution = block.get("resolution")
-    status = resolution.get("status") if isinstance(resolution, dict) else None
-    return block.get("kind") == "conflict" and status != "resolved"
+unresolved = IDX.unresolved
 
 
 def flagged(block: dict[str, Any]) -> bool:

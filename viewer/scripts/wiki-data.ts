@@ -157,3 +157,41 @@ export function pollWikiData(options: WikiDataOptions & {intervalMs?: number}) {
     build(changed);
   }, intervalMs);
 }
+
+export interface QueryHit {
+  score: number;
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  blocks: string[];
+  superseded_by: string | null;
+}
+
+/** `scripts/llmwiki.py query` — 뷰어 검색과 CLI 가 같은 색인을 탄다. */
+export function queryArgs(q: string, limit = 50): string[] {
+  return ["scripts/llmwiki.py", "query", q, "--limit", String(limit)];
+}
+
+export function runWikiQuery(projectRoot: string, q: string, limit = 50): {hits: QueryHit[]} {
+  const text = q.trim();
+  if (!text) return {hits: []};
+  const python = resolvePython();
+  if (!python) {
+    throw new Error("Python 3.9+ 를 찾지 못했다 — LLMWIKI_PYTHON 에 실행 파일 경로를 주거나 "
+      + "scripts/install.sh 로 마련한다");
+  }
+  const capped = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 50));
+  const result = spawnSync(python, queryArgs(text, capped), {
+    cwd: projectRoot, encoding: "utf-8", maxBuffer: 2_000_000,
+  });
+  if (result.status !== 0) {
+    throw new Error((result.stderr || result.stdout || `query exit ${result.status}`).trim());
+  }
+  const hits: QueryHit[] = [];
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    hits.push(JSON.parse(line) as QueryHit);
+  }
+  return {hits};
+}
