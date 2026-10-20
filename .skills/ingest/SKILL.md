@@ -12,7 +12,7 @@ description: raw/의 새 소스를 JSON 위키에 통합한다. "ingest 해줘",
 3. page는 CLI로만 쓴다. **`wiki/**/*.json`을 직접 쓰거나 고치지 않는다** — 손으로 쓴 JSON은 source_text·data·fingerprint·refs·links가 어긋나고, `validate`가 error로 잡는다.
    - 새 page: 원본을 그대로 넣을 때는 `python3 scripts/llmwiki.py ingest raw/… --type <type>`. 소스 요약·entity·concept·synthesis·project page는 frontmatter를 갖춘 markdown 초안 `<slug>.md`를 `wiki/` 밖(예: 임시 디렉터리)에 쓰고 같은 명령으로 ingest한다. 파일 이름이 slug가 된다.
    - 있는 block 고치기: `python3 scripts/llmwiki.py outline <page>`로 block id를 찾고, `python3 scripts/llmwiki.py edit <page> --block <id>`에 바꿀 markdown 조각을 `--text`·`--file`·stdin으로 준다. 조각이 여러 block이면 그 자리에 차례로 들어간다 — 덧붙이기와 나누기가 이것이다. 옛 block id는 `block_aliases`에 남는다.
-   - page 머리(tags·projects·sources·supersedes·related·raw·summary) 바꾸기: `python3 scripts/llmwiki.py render <page> --format md > <slug>.md`로 받아 frontmatter를 고친 뒤 `ingest <slug>.md --update`.
+   - page 머리(tags·projects·sources·supersedes·related·raw·summary) 바꾸기: `python3 scripts/llmwiki.py render <page> --format md > <slug>.md`로 받아 frontmatter를 고친 뒤 `ingest <slug>.md --update`. `updated:`는 frontmatter 값 그대로 들어가니 내용을 바꿨으면 오늘 날짜로 고친다 — compile debt 경고가 이 날짜로 판정한다(`edit`는 스스로 바꾼다).
 4. 영속 ID·fingerprint·refs·links는 CLI가 본문에서 만든다. 근거는 frontmatter `sources`와 본문 `[[링크]]`로 연결한다.
    - frontmatter `raw:`에 원본의 저장소 상대경로(`raw/…`)를 **반드시** 적는다 — page의 `raw_ref`가 된다. 비어 있으면 주기 루틴이 그 소스를 아직 넣지 않은 것으로 보고 계속 다시 부른다.
    - `projects`·`tags`를 반드시 채운다 — 그래프의 프로젝트 그룹과 태그 색상이 이 두 필드에서만 나온다. tag는 `tools/config/tags.json` 목록(있을 때)에서 고르고, 목록에 없는 자유 낱말은 frontmatter `keywords:`에 둔다(검색 전용).
