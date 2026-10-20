@@ -272,6 +272,9 @@ MAX_BLOCKS_PER_PAGE = (1 << BLOCK_BITS) - 1
 
 # block 의 구조 신호는 posting 에 1바이트 flag 로 들어가고 조회 때 곱으로 푼다.
 FLAG_ANCHOR, FLAG_CURRENT, FLAG_CONFLICT = 1, 2, 4
+# posting 의 tf·길이는 array('H') 다. 한 block 이 65,535 토큰을 넘거나 한 토큰을 그만큼 되풀이하면
+# (붙여 넣은 로그·거대한 표) 넘쳐서 build 가 죽었다. BM25 는 그 근처에서 이미 포화하니 상한에서 자른다.
+POSTING_MAX = (1 << 16) - 1
 
 
 def _mult_of(flags: int) -> float:
@@ -359,8 +362,9 @@ def page_record(rel: str, page: dict[str, Any], *, use_heading_paths: bool, sha2
         counts: dict[str, int] = {}
         for t in toks:
             counts[t] = counts.get(t, 0) + 1
+        length = min(len(toks), POSTING_MAX)
         for t, c in counts.items():
-            posting.setdefault(t, []).append((brid, c, len(toks)))
+            posting.setdefault(t, []).append((brid, min(c, POSTING_MAX), length))
         total_len += len(toks)
         n_indexed += 1
 

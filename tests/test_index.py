@@ -626,3 +626,15 @@ class CliIndexTest(IndexCase):
         payload = json.loads(self.context_cli("doctor").stdout)
         self.assertTrue(payload["search_index"]["fresh"])
         self.assertEqual(payload["search_index"]["pages"], len(CORPUS))
+
+
+class HugeBlockTest(IndexCase):
+    def test_a_block_past_the_posting_width_still_builds(self) -> None:
+        """한 block 이 65,535 토큰을 넘거나 한 토큰을 그만큼 되풀이해도 build 가 죽지 않는다."""
+        huge = make_page("거대-로그", "# 거대 로그\n\n" + "가" * 70_000 + "\n\n" + " ".join(["row"] * 70_000) + "\n",
+                         type="source", projects=["beta"], summary="붙여 넣은 로그.")
+        self.write_pages([huge], name="huge.json")
+        stats = self.build()
+        self.assertEqual(stats["pages"], len(CORPUS) + 1)
+        hits = llmwiki.query(self.ws, "row 가가")
+        self.assertEqual(hits[0]["id"], "page:거대-로그")
