@@ -58,7 +58,7 @@ SEARCH_INDEX = search_index.DB_NAME
 
 ALLOWED_TYPES = {"source", "entity", "concept", "synthesis", "project", "home", "index", "log"}
 ALLOWED_BLOCKS = {"heading", "paragraph", "list", "table", "quote", "conflict", "current",
-                  "code", "thematic_break", "markdown", "raw"}
+                  "open_question", "code", "thematic_break", "markdown", "raw"}
 ALLOWED_LINK_KINDS = {"wiki", "source", "supersedes", "related"}
 UNLINKED_TYPES = {"home", "index", "log"}
 PAGE_DIRS = {
@@ -80,6 +80,10 @@ BLOCK_KEEP = re.compile(r"[^a-zA-Z0-9가-힣._-]+")
 
 CONFLICT_MARK = "⚠️ 상충"
 CURRENT_MARK = "✅ 현행"
+# 아직 답이 없는 질문: `> ❓ 미결: …` 인용에 `owner:`/`due:`(또는 `담당:`/`기한:`) 줄을 둔다.
+OPEN_MARK = "❓"
+OPEN_OWNER = re.compile(r"(?mi)^\s*(?:owner|담당)\s*:\s*(.+?)\s*$")
+OPEN_DUE = re.compile(r"(?mi)^\s*(?:due|기한)\s*:\s*(\d{4}-\d{2}-\d{2})\s*$")
 
 # Deterministic radial layout. Project groups occupy adjacent angular sectors,
 # while every sector fills the same disk so the complete graph stays circular.
@@ -399,13 +403,18 @@ def parse_blocks(page_id: str, body: str) -> tuple[dict[str, Any], list[str]]:
                 raw.append(lines[i])
                 i += 1
             text = "\n".join(re.sub(r"^\s*>\s?", "", x) for x in raw)
-            kind = "conflict" if CONFLICT_MARK in text else "current" if CURRENT_MARK in text else "quote"
+            kind = "conflict" if CONFLICT_MARK in text else "current" if CURRENT_MARK in text \
+                else "open_question" if OPEN_MARK in text else "quote"
             resolution = None
+            data: dict[str, Any] = {"text": text}
             if kind == "conflict":
                 resolution = {"status": "unresolved"}
             elif kind == "current":
                 resolution = {"status": "resolved", "decided_at": today()}
-            add(kind, raw, {"text": text}, resolution)
+            elif kind == "open_question":
+                owner, due = OPEN_OWNER.search(text), OPEN_DUE.search(text)
+                data.update(owner=owner.group(1) if owner else "", due=due.group(1) if due else None)
+            add(kind, raw, data, resolution)
             continue
 
         if line.startswith("|"):
@@ -679,6 +688,12 @@ def validate_page(page: dict[str, Any], validator: SchemaValidator | None = None
         status = block.get("resolution", {}).get("status")
         if status is not None and status not in {"resolved", "unresolved"}:
             errors.append(f"{pid}:{bid}: invalid resolution status {status!r}")
+        if block.get("kind") == "open_question":
+            data = block.get("data") if isinstance(block.get("data"), dict) else {}
+            if not isinstance(data.get("owner"), str):
+                errors.append(f"{pid}:{bid}: open_question needs data.owner (string, '' when nobody owns it)")
+            if "due" not in data or not (data["due"] is None or DATE.fullmatch(str(data["due"]))):
+                errors.append(f"{pid}:{bid}: open_question needs data.due (YYYY-MM-DD or null)")
     aliases = page.get("block_aliases") or {}
     if isinstance(aliases, dict):
         for old, live in aliases.items():
@@ -1385,7 +1400,7 @@ def render_block_html(block: dict[str, Any]) -> str:
         items = data.get("items") or [
             line.strip() for line in str(data.get("text", "")).splitlines() if line.strip()]
         return f"<{tag}>" + "".join(f"<li>{wiki_to_html(i)}</li>" for i in items) + f"</{tag}>"
-    if kind in {"quote", "conflict", "current"}:
+    if kind in {"quote", "conflict", "current", "open_question"}:
         return f'<blockquote class="{kind}">{wiki_to_html(data.get("text", ""))}</blockquote>'
     if kind == "thematic_break":
         return "<hr>"
@@ -1564,6 +1579,12 @@ def lint(ws: Workspace) -> tuple[list[str], list[str]]:
             block = page["blocks"][bid]
             if block["kind"] == "conflict" and block.get("resolution", {}).get("status") != "resolved":
                 warnings.append(f"{page['id']}:{bid}: unresolved conflict")
+            elif block["kind"] == "open_question":
+                data = block.get("data") if isinstance(block.get("data"), dict) else {}
+                due = data.get("due")
+                late = " — 기한 지남" if due and str(due) < today() else ""
+                warnings.append(f"{page['id']}:{bid}: open question (owner {data.get('owner') or '없음'}, "
+                                f"due {due or '없음'}){late}")
         if not page.get("summary"):
             warnings.append(f"{page['id']}: empty summary")
 
@@ -1652,6 +1673,18 @@ def compile_warnings(pages: list[dict[str, Any]], lookup: dict[str, dict[str, An
                     warnings.append(f"{pid}:{bid}: 본문이 '{found.group(0)}' 라고 하지만 supersedes 링크가 없다")
                     break
     return warnings
+
+
+def issue_counts(pages: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """lint 가 따로 세는 열린 일 — 미판정 상충과 미결 질문은 다른 일이다."""
+    counts = {"unresolved_conflicts": 0, "open_questions": 0}
+    for page in pages:
+        for block in (page.get("blocks") or {}).values():
+            if isinstance(block, dict) and T.unresolved(block):
+                counts["unresolved_conflicts"] += 1
+            elif isinstance(block, dict) and block.get("kind") == "open_question":
+                counts["open_questions"] += 1
+    return counts
 
 
 def stale_index(ws: Workspace) -> list[str]:
@@ -1963,7 +1996,7 @@ def render_data(page_id: str, kind: str, data: Any) -> str | None:
         candidates.append("#" * data["level"] + " " + text)
     elif kind == "paragraph" and isinstance(text, str):
         candidates.append(text)
-    elif kind == "quote" and isinstance(text, str):
+    elif kind in ("quote", "open_question") and isinstance(text, str):
         candidates.append("\n".join(f"> {line}".rstrip() for line in text.split("\n")))
     elif kind == "list":
         if isinstance(text, str):
@@ -2305,16 +2338,19 @@ def run(argv: list[str] | None = None) -> int:
         emit(build(ws, changed=args.changed, full=args.full, heading_paths=args.heading_paths))
     elif command in {"validate", "lint"}:
         errors, warnings = lint(ws)
+        counts = issue_counts(ws.load_pages()) if command == "lint" else None
         if command == "validate":
             warnings = []
         if getattr(args, "as_json", False):
-            emit({"errors": errors, "warnings": warnings})
+            emit({"errors": errors, "warnings": warnings, **({"counts": counts} if counts else {})})
         else:
             for item in errors:
                 print("ERROR", item)
             for item in warnings:
                 print("WARN", item)
-            print(f"{len(errors)} errors, {len(warnings)} warnings")
+            tally = (f" — 미판정 상충 {counts['unresolved_conflicts']}, 미결 질문 {counts['open_questions']}"
+                     if counts else "")
+            print(f"{len(errors)} errors, {len(warnings)} warnings{tally}")
         return 1 if errors else 0
     elif command == "query":
         for row in query(ws, args.query, args.limit):

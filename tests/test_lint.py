@@ -396,3 +396,68 @@ class CompileQualityTest(WorkspaceCase):
             ws = llmwiki.Workspace(REPO, fixtures=fixtures)
             pages = ws.load_pages()
             self.assertEqual(llmwiki.compile_warnings(pages, llmwiki.page_lookup(pages)), [])
+
+
+class OpenQuestionTest(WorkspaceCase):
+    """아직 답이 없는 질문은 상충과 다른 일이다 — owner·due 를 갖고 lint 가 따로 센다."""
+
+    BODY = ("# Alpha\n\n[[beta]]\n\n> ⚠️ 상충: 두 문서의 수치가 다르다.\n\n"
+            "> ❓ 미결: 배포 주기를 격주로 바꿀 것인가?\n> owner: release-team\n> due: 2026-08-01\n\n"
+            "> ❓ 미결: 누가 승인하나?\n> 담당: 플랫폼팀\n\n"
+            "> ❓ 미결: 아직 아무도 모른다.\n")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.page = make_page("alpha", self.BODY)
+        self.questions = [self.page["blocks"][b] for b in self.page["block_order"]
+                          if self.page["blocks"][b]["kind"] == "open_question"]
+
+    def test_the_parser_reads_owner_and_due(self) -> None:
+        self.assertEqual([(q["data"]["owner"], q["data"]["due"]) for q in self.questions],
+                         [("release-team", "2026-08-01"), ("플랫폼팀", None), ("", None)])
+        self.assertTrue(self.questions[0]["data"]["text"].startswith("❓ 미결: 배포 주기를"))
+        self.assertNotIn("resolution", self.questions[0])
+        self.assertEqual(llmwiki.consistency_errors(self.page), [])
+        self.assertEqual(llmwiki.validate_page(self.page, llmwiki.SchemaValidator.load(self.ws)), [])
+
+    def test_owner_and_due_are_required_fields(self) -> None:
+        bid = next(b for b in self.page["block_order"] if self.page["blocks"][b]["kind"] == "open_question")
+        data = self.page["blocks"][bid]["data"]
+        del data["owner"]
+        data["due"] = "다음 주"
+        errors = " ".join(llmwiki.validate_page(self.page, llmwiki.SchemaValidator.load(self.ws)))
+        self.assertIn("open_question needs data.owner", errors)
+        self.assertIn("open_question needs data.due", errors)
+
+    def test_lint_counts_conflicts_and_open_questions_apart(self) -> None:
+        self.write_pages([self.page, make_page("beta", "# Beta\n\n[[alpha]]\n")])
+        llmwiki.build(self.ws)
+        _errors, warnings = llmwiki.lint(self.ws)
+        self.assertEqual(len(only(warnings, "unresolved conflict")), 1)
+        found = only(warnings, "open question")
+        self.assertEqual(len(found), 3)
+        self.assertTrue(any("(owner release-team, due 2026-08-01) — 기한 지남" in w for w in found))
+        self.assertTrue(any("(owner 없음, due 없음)" in w for w in found))
+        self.assertEqual(llmwiki.issue_counts(llmwiki.Workspace(self.root).load_pages()),
+                         {"unresolved_conflicts": 1, "open_questions": 3})
+        self.assertIn("미판정 상충 1, 미결 질문 3", self.cli("lint").stdout)
+        self.assertEqual(json.loads(self.cli("lint", "--json").stdout)["counts"],
+                         {"unresolved_conflicts": 1, "open_questions": 3})
+
+    def test_edit_changes_owner_and_due_through_the_markdown(self) -> None:
+        self.write_pages([self.page, make_page("beta", "# Beta\n\n[[alpha]]\n")])
+        bid = next(b for b in self.page["block_order"] if self.page["blocks"][b]["kind"] == "open_question")
+        new_id = llmwiki.edit(self.ws, "alpha", bid,
+                              "> ❓ 미결: 배포 주기를 격주로 바꿀 것인가?\n> owner: platform\n> due: 2026-12-01")["block_id"]
+        data = llmwiki.find_page(self.ws, "alpha")["blocks"][new_id]["data"]
+        self.assertEqual((data["owner"], data["due"]), ("platform", "2026-12-01"))
+
+    def test_it_renders_as_its_own_blockquote_and_round_trips(self) -> None:
+        self.assertIn('<blockquote class="open_question">', llmwiki.render_html(self.page))
+        question = self.questions[0]
+        raw = llmwiki.render_data("page:alpha", "open_question", question["data"])
+        self.assertEqual(llmwiki.parse_one("page:alpha", raw)["data"], question["data"])
+
+    def test_the_schema_knows_the_kind(self) -> None:
+        schema = json.loads((self.root / "tools" / "schema" / "page.schema.json").read_text(encoding="utf-8"))
+        self.assertIn("open_question", schema["$defs"]["block"]["properties"]["kind"]["enum"])

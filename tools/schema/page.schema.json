@@ -34,7 +34,7 @@
       "required": ["id", "kind", "data", "refs", "source_text", "fingerprint"],
       "properties": {
         "id": {"type": "string", "pattern": "^block:"},
-        "kind": {"enum": ["heading", "paragraph", "list", "table", "quote", "conflict", "current", "code", "thematic_break", "markdown", "raw"]},
+        "kind": {"enum": ["heading", "paragraph", "list", "table", "quote", "conflict", "current", "open_question", "code", "thematic_break", "markdown", "raw"]},
         "data": {"type": "object"},
         "refs": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "source_text": {"type": "string"},

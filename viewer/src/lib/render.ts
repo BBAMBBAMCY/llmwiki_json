@@ -51,7 +51,7 @@ export function pageHtml(page: WikiPage): string {
     if (block.kind === "code") return `<pre><code>${esc(data.text)}</code></pre>`;
     if (block.kind === "table") return `<pre class="raw-structure">${esc(block.source_text)}</pre>`;
     if (block.kind === "list") return `<pre class="raw-structure">${esc(data.text ?? block.source_text)}</pre>`;
-    if (["quote", "conflict", "current"].includes(block.kind)) return `<blockquote class="${block.kind}">${links(data.text)}</blockquote>`;
+    if (["quote", "conflict", "current", "open_question"].includes(block.kind)) return `<blockquote class="${block.kind}">${links(data.text)}</blockquote>`;
     return block.kind === "thematic_break" ? "<hr>" : `<pre>${esc(block.source_text)}</pre>`;
   }).join("");
 }

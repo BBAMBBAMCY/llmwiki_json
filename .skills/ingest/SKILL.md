@@ -18,7 +18,7 @@ description: raw/의 새 소스를 JSON 위키에 통합한다. "ingest 해줘",
    - `projects`·`tags`를 반드시 채운다 — 그래프의 프로젝트 그룹과 태그 색상이 이 두 필드에서만 나온다.
    - 본문 `[[링크]]`는 CLI가 page `links`에 같이 넣는다.
    - 뒤집힌 주장은 `supersedes`, 곁가지 관계는 `related`로 남긴다. 둘 다 그래프 선이 된다.
-5. 상충은 `> ⚠️ 상충: …` 인용 block으로 적는다 — `kind: "conflict"`, `resolution.status: unresolved`가 된다. 새 주장으로 옛 주장을 지우지 않고 `history`와 `supersedes`를 남긴다.
+5. 상충은 `> ⚠️ 상충: …` 인용 block으로 적는다 — `kind: "conflict"`, `resolution.status: unresolved`가 된다. 새 주장으로 옛 주장을 지우지 않고 `history`와 `supersedes`를 남긴다. 소스가 답하지 못한 질문은 `> ❓ 미결: …` 인용에 `owner:`·`due:` 줄을 붙여 `open_question` block으로 남긴다.
 6. 자격증명·접속 정보는 저장하지 않는다. 값이 있으면 `(접속 정보 생략)`으로 대체하거나 ingest를 중단한다.
 7. `python3 scripts/llmwiki.py build`, `validate`, `lint`를 실행한다. build가 index와 JSON map, viewer data를 함께 갱신한다. validate가 block 어긋남을 내면 `repair --dry-run`으로 판정을 본 뒤 `repair`로 고친다.
 8. `wiki/log.jsonl`에 ingest·edit 기록이 추가됐는지 확인하고 변경된 페이지·상충을 보고한다.
