@@ -669,6 +669,78 @@ def validate_page(page: dict[str, Any], validator: SchemaValidator | None = None
     return sorted(dict.fromkeys(errors))
 
 
+# --------------------------------------------------------------------------- consistency
+# source_text 가 block 의 정본이고 data·fingerprint·refs·id·page links 는 거기서 나온다. 손으로 고친
+# JSON 은 이 사이가 어긋난다 — 검색은 data.text 를, 렌더와 그래프는 source_text·refs·links 를 봐서
+# 같은 page 가 화면마다 다른 말을 한다. 이 kind 들의 data 는 본문 밖의 값(판정·주장 목록)을 담아도 된다.
+DATA_FREE_KINDS = frozenset({"conflict", "current", "raw", "markdown"})
+
+
+def parse_one(page_id: str, source_text: str) -> dict[str, Any] | None:
+    """`source_text` 를 혼자 파싱한 block — block 하나로 읽히지 않으면 None."""
+    blocks, order = parse_blocks(page_id, source_text)
+    return blocks[order[0]] if len(order) == 1 else None
+
+
+def block_drift(page: dict[str, Any], bid: str, block: dict[str, Any]) -> list[str]:
+    """이 block 에서 source_text 와 어긋난 파생 필드들 (설명 문장 목록, 비면 일치)."""
+    kind, text = block.get("kind"), block.get("source_text")
+    if not isinstance(text, str) or not isinstance(kind, str):
+        return []                                     # 구조 오류는 validate_page 가 낸다
+    problems: list[str] = []
+    fingerprint = block_fingerprint(kind, text)
+    if block.get("fingerprint") != fingerprint:
+        problems.append(f"fingerprint {block.get('fingerprint')!r} != block_fingerprint(kind, source_text) "
+                        f"{fingerprint!r}")
+    if kind not in DATA_FREE_KINDS:
+        parsed = parse_one(page["id"], text)
+        if parsed is None:
+            problems.append("source_text does not parse to exactly one block")
+        elif parsed["kind"] != kind:
+            problems.append(f"source_text parses as {parsed['kind']}, not {kind}")
+        elif parsed["data"] != block.get("data"):
+            problems.append("data != parse(source_text)")
+    if not isinstance(block.get("refs"), list) or set(block["refs"]) != set(refs_in(text)):
+        problems.append(f"refs {block.get('refs')!r} != [[links]] in source_text {refs_in(text)!r}")
+    if not re.fullmatch(re.escape(f"block:{page['id'].removeprefix('page:')}:") + r"[0-9a-f]{16}:[1-9][0-9]*", bid):
+        problems.append("block id is not block:<slug>:<16hex>:<n>")
+    elif not carries_fingerprint(page, bid, str(block.get("fingerprint"))):
+        problems.append("block id does not carry its fingerprint")
+    return problems
+
+
+def body_links(page: dict[str, Any]) -> dict[str, str]:
+    """본문 `[[링크]]` — link_key → 처음 적힌 표기."""
+    out: dict[str, str] = {}
+    blocks = page.get("blocks") or {}
+    for bid in page.get("block_order") or []:
+        for match in WIKILINK.finditer(str((blocks.get(bid) or {}).get("source_text") or "")):
+            out.setdefault(link_key(match.group(1)), norm(match.group(1)))
+    out.pop("", None)
+    return out
+
+
+def consistency_errors(page: dict[str, Any]) -> list[str]:
+    """source_text 에서 다시 만든 값과 정본이 다른 곳. `validate`·`lint` 가 error 로 낸다."""
+    pid = page.get("id", "?")
+    blocks = page.get("blocks")
+    if not isinstance(blocks, dict) or not isinstance(page.get("block_order"), list):
+        return []
+    errors = [f"{pid}:{bid}: {problem}"
+              for bid in page["block_order"] if isinstance(blocks.get(bid), dict)
+              for problem in block_drift(page, bid, blocks[bid])]
+    body = body_links(page)
+    declared: dict[str, str] = {}
+    for link in page.get("links") or []:
+        if isinstance(link, dict) and link.get("kind", "wiki") == "wiki" and link_key(str(link.get("target") or "")):
+            declared.setdefault(link_key(str(link["target"])), norm(link["target"]))
+    for key in sorted(set(body) - set(declared)):
+        errors.append(f"{pid}: block link [[{body[key]}]] missing from links")
+    for key in sorted(set(declared) - set(body)):
+        errors.append(f"{pid}: wiki link [[{declared[key]}]] is not in the body")
+    return errors
+
+
 # --------------------------------------------------------------------------- projection / build
 def project_group(projects: Iterable[str], groups: dict[str, Any]) -> str:
     projects = [norm(project).lower() for project in projects if norm(project)]
@@ -1411,6 +1483,7 @@ def lint(ws: Workspace) -> tuple[list[str], list[str]]:
 
     for page in pages:
         errors.extend(validate_page(page, validator))
+        errors.extend(consistency_errors(page))
         slug = page.get("slug")
         if slug in by_slug:
             errors.append(f"{page.get('id')}: duplicate slug {slug}")
@@ -1425,17 +1498,11 @@ def lint(ws: Workspace) -> tuple[list[str], list[str]]:
 
     lookup = page_lookup(pages)
     for page in pages:
-        declared = {link_key(link.get("target", "")) for link in page.get("links", [])}
         for link in implied_links(page):
-            target = lookup.get(link_key(link["target"]))
-            if target is None:
-                # A `source:` ref may name evidence that has no page of its own;
-                # a [[wikilink]] that resolves to nothing is always a mistake.
-                if link["kind"] == "wiki":
-                    errors.append(f"{page['id']}: missing link target [[{link['target']}]]")
-                continue
-            if link["kind"] == "wiki" and link_key(link["target"]) not in declared:
-                warnings.append(f"{page['id']}: block link [[{link['target']}]] missing from links")
+            # A `source:` ref may name evidence that has no page of its own;
+            # a [[wikilink]] that resolves to nothing is always a mistake.
+            if link["kind"] == "wiki" and lookup.get(link_key(link["target"])) is None:
+                errors.append(f"{page['id']}: missing link target [[{link['target']}]]")
         for ref in page.get("sources", []):
             if str(ref).startswith("page:") and link_key(str(ref)) not in lookup:
                 errors.append(f"{page['id']}: source ref {ref} has no page")
@@ -1528,7 +1595,8 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
     else:
         page = page_from_markdown(ws, path, page_type, projects, summary)
 
-    errors = validate_page(page, SchemaValidator.load(ws))
+    # 쓰기 경로는 어긋난 page 를 들이지 않는다 — markdown 은 파서가 만들어 늘 맞고, JSON 소스는 여기서 걸린다.
+    errors = validate_page(page, SchemaValidator.load(ws)) + consistency_errors(page)
     if errors:
         raise WikiError("\n".join(errors))
 

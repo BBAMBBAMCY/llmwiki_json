@@ -76,7 +76,7 @@ python3 scripts/llmwiki.py query "검색어"
 | `ingest <파일>` | raw 소스 1건을 정본 page로 기록. `--type` `--project` `--summary` `--update` `--dry-run` |
 | `edit <page> --block <id>` | block 하나를 markdown 조각(`--text`, `--file`, 없으면 stdin)으로 다시 쓴다. source_text·data·fingerprint·refs와 page `links`를 함께 다시 만들고, 내용이 바뀌면 block id도 새 지문으로 바뀐다 — 옛 id는 page `block_aliases`에 남아 `get`이 계속 찾는다. `--dry-run` |
 | `build` | 정본 → `index/*.json` + `index/search.sqlite` + `viewer/public/data/**` 결정적 재생성. `--changed <파일…>`(바뀐 파일 힌트 — 그 page 만 색인에 갈아 끼우는 증분, 힌트 밖 변경이 보이면 전량), `--full`, `--heading-paths`(H6, 기본 꺼짐) |
-| `validate` | 스키마·구조 검증 (오류만) |
+| `validate` | 스키마·구조 검증 (오류만). block마다 source_text에서 다시 만든 값과 정본이 같은지도 본다 — `fingerprint == block_fingerprint(kind, source_text)`, `data == parse(source_text)`(conflict·current·raw·markdown 제외), refs, id 형식 `block:<slug>:<16hex>:<n>`, 본문 `[[링크]]` 집합 == `links`(kind=wiki) 집합. build는 이 검사로 멈추지 않는다 |
 | `lint` | 오류 + 경고: 미존재 링크, 미판정 상충, 고아, 빈 summary, stale index. `--json` |
 | `query "질의"` | 검색 색인으로 page 순위 (신선한 `index/search.sqlite`, 없거나 낡으면 정본에서 메모리 색인). `--limit` |
 | `get <주소>` | page·block projection. `--block` `--field` `--pointer` |

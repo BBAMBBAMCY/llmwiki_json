@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from tests.support import WorkspaceCase, llmwiki, make_page
+from tests.support import REPO, WorkspaceCase, llmwiki, make_page
 
 
 def only(items: list[str], needle: str) -> list[str]:
@@ -219,14 +219,13 @@ class LinkToleranceLintTest(WorkspaceCase):
         errors, _ = self.build_and_lint()
         self.assertEqual(only(errors, "missing link target"), [])
 
-    def test_block_link_missing_from_the_links_array_is_a_warning(self) -> None:
+    def test_block_link_missing_from_the_links_array_is_an_error(self) -> None:
         alpha = make_page("alpha", "# Alpha\n\n[[beta]] 참조.\n")
         alpha["links"] = []
         self.write_pages([alpha, make_page("beta", "# Beta\n\n[[alpha]] 참조.\n")])
         errors, warnings = self.build_and_lint()
-        self.assertEqual(errors, [])
-        self.assertEqual(only(warnings, "missing from links"),
-                         ["page:alpha: block link [[beta]] missing from links"])
+        self.assertEqual(errors, ["page:alpha: block link [[beta]] missing from links"])
+        self.assertEqual(only(warnings, "missing from links"), [])
 
     def test_source_reference_keeps_a_page_off_the_orphan_list(self) -> None:
         self.write_pages([make_page("handbook", "# Handbook\n\n원본.\n"),
@@ -239,3 +238,93 @@ class LinkToleranceLintTest(WorkspaceCase):
                                     sources=["user:2026-08-19", "raw:notes.md", "source:외부자료"])])
         errors, _ = self.build_and_lint()
         self.assertEqual(errors, [])
+
+
+class ConsistencyTest(WorkspaceCase):
+    """source_text 가 정본이다 — 거기서 다시 만든 값과 다른 파생 필드는 validate error 다."""
+
+    BODY = "# Alpha\n\n첫 문단 [[beta]].\n\n- 하나\n- 둘\n\n> ⚠️ 상충: 두 문서가 다르다.\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.page = make_page("alpha", self.BODY)
+        self.para, self.items, self.conflict = self.page["block_order"][1:4]
+
+    def errors(self, page: dict) -> list[str]:
+        return llmwiki.consistency_errors(page)
+
+    def test_a_parsed_page_is_consistent(self) -> None:
+        self.assertEqual(self.errors(self.page), [])
+
+    def test_fingerprint_must_be_the_source_text_hash(self) -> None:
+        self.page["blocks"][self.para]["fingerprint"] = "0" * 16
+        self.assertTrue(only(self.errors(self.page), "!= block_fingerprint(kind, source_text)"))
+
+    def test_data_must_be_what_the_source_text_parses_to(self) -> None:
+        self.page["blocks"][self.para]["data"]["text"] = "검색만 보는 다른 문장."
+        self.assertEqual(only(self.errors(self.page), "data != parse"),
+                         [f"page:alpha:{self.para}: data != parse(source_text)"])
+        self.page["blocks"][self.items]["data"]["items"].append("셋")
+        self.assertEqual(len(only(self.errors(self.page), "data != parse")), 2)
+
+    def test_source_text_must_read_as_one_block_of_the_same_kind(self) -> None:
+        block = self.page["blocks"][self.para]
+        block["source_text"] = "- 목록이 됐다"
+        self.assertTrue(only(self.errors(self.page), "parses as list, not paragraph"))
+        block["source_text"] = "한 문단.\n\n두 문단."
+        self.assertTrue(only(self.errors(self.page), "exactly one block"))
+
+    def test_conflict_current_raw_and_markdown_may_carry_extra_data(self) -> None:
+        self.page["blocks"][self.conflict]["data"]["claims"] = ["A 기준", "B 기준"]
+        self.assertEqual(self.errors(self.page), [])
+
+    def test_refs_follow_the_source_text(self) -> None:
+        self.page["blocks"][self.para]["refs"] = ["gamma"]
+        self.assertTrue(only(self.errors(self.page), "refs ['gamma']"))
+
+    def test_block_ids_carry_slug_fingerprint_and_occurrence(self) -> None:
+        page = make_page("alpha", "# Alpha\n\n문단.\n")
+        old = page["block_order"][1]
+        legacy = "block:alpha:p1"
+        page["blocks"][legacy] = dict(page["blocks"].pop(old), id=legacy)
+        page["block_order"][1] = legacy
+        self.assertEqual(only(self.errors(page), "block id"),
+                         [f"page:alpha:{legacy}: block id is not block:<slug>:<16hex>:<n>"])
+
+    def test_content_and_fingerprint_changed_but_the_id_did_not(self) -> None:
+        block = self.page["blocks"][self.para]
+        block["source_text"] = block["data"]["text"] = "바뀐 문단 [[beta]]."
+        block["fingerprint"] = llmwiki.block_fingerprint("paragraph", block["source_text"])
+        self.assertEqual(only(self.errors(self.page), "block id"),
+                         [f"page:alpha:{self.para}: block id does not carry its fingerprint"])
+
+    def test_wiki_links_are_exactly_the_body_links(self) -> None:
+        self.page["links"] = [{"target": "Gamma", "kind": "wiki"},
+                              {"target": "beta", "kind": "related"}]
+        self.assertEqual(only(self.errors(self.page), "link"),
+                         ["page:alpha: block link [[beta]] missing from links",
+                          "page:alpha: wiki link [[Gamma]] is not in the body"])
+
+    def test_link_keys_tolerate_case_and_spacing(self) -> None:
+        self.page["links"][0]["target"] = "Beta"
+        self.assertEqual(self.errors(self.page), [])
+
+    def test_validate_reports_drift_but_build_still_projects(self) -> None:
+        self.page["blocks"][self.para]["data"]["text"] = "다른 말."
+        self.write_pages([self.page, make_page("beta", "# Beta\n\n[[alpha]]\n")])
+        self.assertEqual(json.loads(self.cli("build").stdout)["pages"], 2)
+        proc = self.cli("validate", expect=1)
+        self.assertIn(f"ERROR page:alpha:{self.para}: data != parse(source_text)", proc.stdout)
+
+    def test_ingest_refuses_a_drifted_json_page(self) -> None:
+        self.page["blocks"][self.para]["fingerprint"] = "0" * 16
+        path = self.root / "raw" / "alpha.json"
+        path.write_text(json.dumps(self.page, ensure_ascii=False), encoding="utf-8")
+        with self.assertRaisesRegex(llmwiki.WikiError, "block_fingerprint"):
+            llmwiki.ingest(self.ws, path)
+        self.assertEqual(list((self.root / "wiki").rglob("*.json")), [])
+
+    def test_the_repo_demo_and_fixture_pages_are_consistent(self) -> None:
+        for fixtures in (False, True):
+            for _rel, page in llmwiki.Workspace(REPO, fixtures=fixtures).load_documents():
+                self.assertEqual(self.errors(page), [], page["id"])
