@@ -13,6 +13,7 @@
     "created": {"type": "string", "format": "date"},
     "updated": {"type": "string", "format": "date"},
     "tags": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "keywords": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "projects": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "sources": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
     "raw_ref": {"type": ["string", "null"]},

@@ -39,6 +39,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -189,6 +190,10 @@ class Workspace:
         return self.root / "tools" / "config" / "groups.json"
 
     @property
+    def tags_path(self) -> Path:
+        return self.root / "tools" / "config" / "tags.json"
+
+    @property
     def schema_path(self) -> Path:
         return self.root / "tools" / "schema" / "page.schema.json"
 
@@ -229,6 +234,16 @@ class Workspace:
         if not self.groups_path.exists():
             raise WikiError(f"missing {self.rel(self.groups_path)}")
         return json.loads(self.groups_path.read_text(encoding="utf-8"))
+
+    def load_tag_vocabulary(self) -> list[str] | None:
+        """`tools/config/tags.json` 의 허용 tag (선택). 파일이 없으면 None — 어휘를 검사하지 않는다."""
+        if not self.tags_path.exists():
+            return None
+        value = json.loads(self.tags_path.read_text(encoding="utf-8"))
+        tags = value.get("tags") if isinstance(value, dict) else None
+        if not isinstance(tags, list):
+            raise WikiError(f"{self.rel(self.tags_path)}: {{\"tags\": [...]}} 이어야 한다")
+        return string_list(tags)
 
 
 # --------------------------------------------------------------------------- markdown parsing
@@ -282,6 +297,41 @@ def string_list(value: Any) -> list[str]:
     else:
         items = [value]
     return list(dict.fromkeys(text for text in (norm(item) for item in items) if text))
+
+
+# --------------------------------------------------------------------------- tags
+TAG_SEPARATORS = re.compile(r"[\s_.\-/]+")
+
+
+def tag_key(tag: Any) -> str:
+    """`pre_v0_1-1`, `pre-v0.1-1`, `Pre V0.1 1` 은 한 tag 다 — 대소문자·`_ . - /`·공백을 가리지 않는다."""
+    text = unicodedata.normalize("NFKC", norm(tag)).casefold()
+    return TAG_SEPARATORS.sub("-", text).strip("-")
+
+
+def tag_spellings(pages: Iterable[dict[str, Any]], vocabulary: Iterable[str] | None = None) -> dict[str, str]:
+    """tag key → 쓸 표기. 허용 목록(`tools/config/tags.json`) 에 있으면 그 표기, 없으면 정본에서 가장 많이
+    쓴 표기(같은 수면 사전순 앞)."""
+    counts: defaultdict[str, Counter[str]] = defaultdict(Counter)
+    for page in pages:
+        for tag in string_list(page.get("tags")):
+            counts[tag_key(tag)][tag] += 1
+    spellings = {key: min(seen, key=lambda tag: (-seen[tag], tag)) for key, seen in counts.items() if key}
+    for tag in vocabulary or ():
+        spellings[tag_key(tag)] = tag
+    return spellings
+
+
+def canonical_tags(tags: Any, spellings: dict[str, str]) -> list[str]:
+    """변형을 한 표기로 모으고 같은 key 는 한 번만 둔다 — 처음 나온 순서대로."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for tag in string_list(tags):
+        key = tag_key(tag)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(spellings.get(key, tag))
+    return out
 
 
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -527,11 +577,14 @@ def page_from_markdown(ws: Workspace, path: Path, page_type: str | None = None,
     links = page_links(page_id, blocks, order)
     links.extend(reference_links(source_refs, string_list(meta.get("supersedes")),
                                  string_list(meta.get("related"))))
+    vocabulary = {tag_key(tag): tag for tag in ws.load_tag_vocabulary() or ()}
+    keywords = string_list(meta.get("keywords"))
     return {
         "schema_version": "1.0", "id": page_id, "slug": slug, "title": title,
         "type": page_type or meta.get("type") or "source",
         "created": meta.get("created") or stamp, "updated": meta.get("updated") or stamp,
-        "tags": string_list(meta.get("tags")),
+        "tags": canonical_tags(meta.get("tags"), vocabulary),
+        **({"keywords": keywords} if keywords else {}),
         "projects": string_list(projects) or string_list(meta.get("projects")),
         "sources": source_refs, "raw_ref": raw_ref,
         "summary": summary or norm(meta_summary) or inferred_summary[:280],
@@ -1342,6 +1395,8 @@ def frontmatter(page: dict[str, Any]) -> list[str]:
             f"updated: {page['updated']}", f"tags: [{flow_list(page['tags'])}]",
             f"projects: [{flow_list(page['projects'])}]",
             f"sources: [{flow_list(page['sources'])}]"]
+    if page.get("keywords"):
+        rows.append(f"keywords: [{flow_list(page['keywords'])}]")
     for kind in ("supersedes", "related"):
         targets = list(dict.fromkeys(str(link.get("target")) for link in page.get("links") or []
                                      if link.get("kind") == kind))
@@ -1600,6 +1655,7 @@ def lint(ws: Workspace) -> tuple[list[str], list[str]]:
             warnings.append(f"{page['id']}: orphan (no inbound or outbound links)")
 
     warnings.extend(compile_warnings(pages, lookup))
+    warnings.extend(tag_warnings(pages, ws.load_tag_vocabulary()))
     warnings.extend(stale_index(ws))
     return sorted(dict.fromkeys(errors)), sorted(dict.fromkeys(warnings))
 
@@ -1675,6 +1731,22 @@ def compile_warnings(pages: list[dict[str, Any]], lookup: dict[str, dict[str, An
     return warnings
 
 
+def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None) -> list[str]:
+    """한 tag 의 여러 표기, 허용 목록 밖의 tag. 목록이 없으면 표기만 본다."""
+    spellings = tag_spellings(pages, vocabulary)
+    allowed = {tag_key(tag) for tag in vocabulary} if vocabulary is not None else None
+    warnings: list[str] = []
+    for page in pages:
+        for tag in string_list(page.get("tags")):
+            key = tag_key(tag)
+            if spellings.get(key, tag) != tag:
+                warnings.append(f"{page['id']}: tag '{tag}' 는 '{spellings[key]}' 의 변형이다 — repair 가 한 표기로 모은다")
+            elif allowed is not None and key not in allowed:
+                warnings.append(f"{page['id']}: tag '{tag}' 가 tools/config/tags.json 에 없다 — "
+                                "목록에 더하거나 keywords 로 옮긴다")
+    return warnings
+
+
 def issue_counts(pages: Iterable[dict[str, Any]]) -> dict[str, int]:
     """lint 가 따로 세는 열린 일 — 미판정 상충과 미결 질문은 다른 일이다."""
     counts = {"unresolved_conflicts": 0, "open_questions": 0}
@@ -1746,9 +1818,11 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
             page["projects"] = projects
         if summary:
             page["summary"] = summary
-        for key in ("tags", "projects", "sources"):
+        for key in ("tags", "keywords", "projects", "sources"):
             if key in page:
                 page[key] = string_list(page[key])
+        if "tags" in page:
+            page["tags"] = canonical_tags(page["tags"], {tag_key(tag): tag for tag in ws.load_tag_vocabulary() or ()})
         page.setdefault("history", []).append(
             {"at": today(), "action": "ingested", "actor": "llmwiki-cli",
              "note": repo_path(ws, path) or path.name})
@@ -2129,17 +2203,29 @@ def mend_links(page: dict[str, Any], remap: dict[str, str], rederived: set[str])
 
 
 def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
-    """`validate` 의 drift 를 판정할 수 있는 만큼 고친다. 판정할 수 없는 것은 목록으로만 남긴다."""
+    """`validate` 의 drift 를 판정할 수 있는 만큼 고친다. 판정할 수 없는 것은 목록으로만 남긴다.
+
+    tag 의 여러 표기(`pre_v0_1-1`·`pre-v0.1-1`) 도 한 표기로 모은다 — 허용 목록의 표기, 없으면 정본에서
+    가장 많이 쓴 표기다. 이것도 판정이 필요 없는 일이다.
+    """
     validator = SchemaValidator.load(ws)
     fixed: list[dict[str, Any]] = []
     undecided: list[dict[str, Any]] = []
     pending: list[tuple[str, dict[str, Any], int]] = []
-    for rel, page in ws.load_documents():
-        if not consistency_errors(page):
+    docs = ws.load_documents()
+    spellings = tag_spellings((page for _rel, page in docs), ws.load_tag_vocabulary())
+    for rel, page in docs:
+        tags = canonical_tags(page.get("tags"), spellings)
+        drifted = bool(consistency_errors(page))
+        if not drifted and tags == page.get("tags"):
             continue
-        snapshot, recorded = snapshot_blocks(page), change_recorded(page)
         work, remap, rederived, count = page, {}, set(), 0
-        for bid in list(page["block_order"]):
+        if tags != page.get("tags"):
+            fixed.append({"page_id": page["id"], "block_id": "", "problems": [f"tags {page.get('tags')} → {tags}"],
+                          "diff": [], "verdict": "tags", "reason": "tag 의 여러 표기를 한 표기로 모은다"})
+            work = dict(work, tags=tags)
+        snapshot, recorded = snapshot_blocks(page), change_recorded(page)
+        for bid in list(page["block_order"]) if drifted else []:
             found = diagnose_block(work, bid, work["blocks"][bid], snapshot, recorded)
             if found is None:
                 continue
@@ -2156,7 +2242,8 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
             found["new_id"] = new["id"]
             fixed.append(found)
             count += 1
-        work = dict(work, links=mend_links(work, remap, rederived))
+        if drifted:
+            work = dict(work, links=mend_links(work, remap, rederived))
         for problem in consistency_errors(work):
             if problem.startswith(f"{page['id']}: wiki link"):
                 undecided.append({"page_id": page["id"], "block_id": "", "problems": [problem], "diff": [],
@@ -2166,7 +2253,8 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
         if work != page:
             work["history"] = [*page.get("history", []),
                                {"at": today(), "action": "repaired", "actor": "llmwiki-cli",
-                                "note": f"{count} block(s) re-derived from source_text/data"}]
+                                "note": f"{count} block(s) re-derived from source_text/data"
+                                        + ("; tags normalised" if work.get("tags") != page.get("tags") else "")}]
             errors = validate_page(work, validator)
             if errors:
                 raise WikiError("\n".join(errors))

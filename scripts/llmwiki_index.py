@@ -375,6 +375,10 @@ def page_record(rel: str, page: dict[str, Any], *, use_heading_paths: bool, sha2
         n_indexed += 1
 
     title = redact(str(page.get("title") or ""))
+    # keywords 는 검색에만 쓴다(색상은 tags) — 제목과 같은 가상 block 에 넣어 page 를 찾는 데만 보탠다
+    keywords = " ".join(redact(norm(word)) for word in page.get("keywords") or [] if norm(word))
+    if keywords:
+        title = f"{title}\n{keywords}" if title else keywords
     if title:                                     # 제목은 근거 없는 가상 block (ev=0)
         brid = block_rid(prid, -1)
         toks = tokenize(title)

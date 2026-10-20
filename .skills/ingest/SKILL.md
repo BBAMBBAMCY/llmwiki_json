@@ -15,7 +15,7 @@ description: raw/의 새 소스를 JSON 위키에 통합한다. "ingest 해줘",
    - page 머리(tags·projects·sources·supersedes·related·raw·summary) 바꾸기: `python3 scripts/llmwiki.py render <page> --format md > <slug>.md`로 받아 frontmatter를 고친 뒤 `ingest <slug>.md --update`.
 4. 영속 ID·fingerprint·refs·links는 CLI가 본문에서 만든다. 근거는 frontmatter `sources`와 본문 `[[링크]]`로 연결한다.
    - frontmatter `raw:`에 원본의 저장소 상대경로(`raw/…`)를 **반드시** 적는다 — page의 `raw_ref`가 된다. 비어 있으면 주기 루틴이 그 소스를 아직 넣지 않은 것으로 보고 계속 다시 부른다.
-   - `projects`·`tags`를 반드시 채운다 — 그래프의 프로젝트 그룹과 태그 색상이 이 두 필드에서만 나온다.
+   - `projects`·`tags`를 반드시 채운다 — 그래프의 프로젝트 그룹과 태그 색상이 이 두 필드에서만 나온다. tag는 `tools/config/tags.json` 목록(있을 때)에서 고르고, 목록에 없는 자유 낱말은 frontmatter `keywords:`에 둔다(검색 전용).
    - 본문 `[[링크]]`는 CLI가 page `links`에 같이 넣는다.
    - 뒤집힌 주장은 `supersedes`, 곁가지 관계는 `related`로 남긴다. 둘 다 그래프 선이 된다.
 5. 상충은 `> ⚠️ 상충: …` 인용 block으로 적는다 — `kind: "conflict"`, `resolution.status: unresolved`가 된다. 새 주장으로 옛 주장을 지우지 않고 `history`와 `supersedes`를 남긴다. 소스가 답하지 못한 질문은 `> ❓ 미결: …` 인용에 `owner:`·`due:` 줄을 붙여 `open_question` block으로 남긴다.

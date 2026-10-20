@@ -32,6 +32,7 @@ export function pageMarkdown(page: WikiPage): string {
     `projects: [${flow(page.projects)}]`,
     `sources: [${flow(page.sources)}]`,
   ];
+  if (page.keywords?.length) rows.push(`keywords: [${flow(page.keywords)}]`);
   for (const kind of ["supersedes", "related"]) {
     const targets = [...new Set(page.links.filter((link) => link.kind === kind).map((link) => link.target))];
     if (targets.length) rows.push(`${kind}: [${flow(targets)}]`);

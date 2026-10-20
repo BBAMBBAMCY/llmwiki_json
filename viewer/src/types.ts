@@ -47,7 +47,7 @@ export interface GraphCanvasHandle {
 export interface WikiBlock { id: string; kind: string; data: Record<string, unknown>; refs: string[]; source_text: string; fingerprint: string; resolution?: { status: string; current?: string; decided_at?: string } }
 export interface WikiPage {
   schema_version: string; id: string; slug: string; title: string; type: string; created: string; updated: string;
-  tags: string[]; projects: string[]; sources: string[]; raw_ref?: string | null; summary?: string;
+  tags: string[]; keywords?: string[]; projects: string[]; sources: string[]; raw_ref?: string | null; summary?: string;
   blocks: Record<string, WikiBlock>; block_order: string[]; block_aliases?: Record<string, string>; links: Array<{target: string; label?: string; anchor?: string; kind: string; block_id?: string}>;
   history: Array<Record<string, string>>;
 }
