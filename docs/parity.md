@@ -53,6 +53,15 @@ cold build 를 돌려 증분 발행본(`index/search.sqlite` 포함)의 바이�
 `kind` 는 `json`, `json_pretty`, `sha256`, `nfc`, `casefold`, `sort`,
 `codepoints`, `regex` 다. 새 kind 를 더하려면 두 probe 를 함께 고쳐야 한다.
 
+### 비밀 규칙은 실제 패턴으로 둔다
+
+`regex/secret*`·`regex/placeholder`·`regex/segment-break`·`regex/credential-key` 는
+`scripts/llmwiki_text.py` 의 `SECRET_RULES`·`PLACEHOLDER`·`SEGMENT_BREAK`·`CREDENTIAL_KEY`
+패턴 문자열을 그대로 쓴다. `tests/test_parity.py` 가 둘이 같은지 보므로 규칙을 바꾸면 이 case 도 같이
+바꿔야 한다. 이미 가린 값·`<…>` 자리표시·`value_token` 같은 이름을 면제하는 판단은 정규식 밖의
+함수(`exempt`, `credential_name`, `key_reference`)라, TS 로 옮길 때는 정규식과 함께 그 함수도 옮긴다.
+지금 뷰어에는 비밀 검사가 없다 — build 가 정본에서 막고, 뷰어는 그 결과만 읽는다.
+
 ## 읽는 법
 
 `순진` 열은 관용적인 JS 로 짰을 때, `완화` 열은 `mitigation` 대로 짰을 때다.

@@ -239,11 +239,11 @@
       "id": "regex/secret",
       "kind": "regex",
       "input": {
-        "pattern": "(?i)(api[_-]?key|password|secret)\\s*[:=]\\s*[^\\s,;\"']+",
-        "text": "API_KEY = abc123"
+        "pattern": "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)[\\\"']?\\s*[:=]\\s*[\\\"']?([^\\s,;\\\"']+)",
+        "text": "API_KEY = abc123, \"api_key\": \"x1\" client_secret = 'zzz' value_token: v token=(접속 정보 생략)"
       },
       "expect": "diverge",
-      "mitigation": "Python inline flag (?i) 를 JS 는 지원하지 않는다. flag 를 패턴 문자열에서 분리해 RegExp 생성자에 넘긴다."
+      "mitigation": "실제 이름 규칙(llmwiki_text.SECRET). Python inline flag (?i) 를 JS 는 지원하지 않는다. flag 를 패턴 문자열에서 분리해 RegExp 생성자에 넘긴다. value_token 같은 이름·자리표시·이미 가린 값의 면제는 정규식 밖(exempt)에서 하므로 그 함수도 같이 옮긴다."
     },
     {
       "id": "json/float-large",
@@ -281,6 +281,86 @@
       ],
       "expect": "diverge",
       "mitigation": "casefold 는 합자를 풀고(ﬁ→fi) 그리스 iota subscript 를 펴며(ᾼ→αι) 체로키는 오히려 대문자로 접는다(ᏸ→Ᏸ). toLowerCase 만으로는 안 되고 CaseFolding.txt 의 full-fold 예외표(약 300자)를 함께 옮겨야 한다. 예외표 + 문자별 toLowerCase 로 하면 인쇄 가능한 BMP 전체에서 일치한다 — 문자열 단위 toLowerCase 는 최종 시그마를 문맥에 따라 바꾸므로 반드시 문자별로 접어야 한다."
+    },
+    {
+      "id": "regex/secret-flag",
+      "kind": "regex",
+      "input": {
+        "pattern": "(?i)--?(password|passwd|token|api[_-]?key|secret|auth)\\b\\s+(\\S+)",
+        "text": "--next-token abc --token <TOKEN> --password hunter2"
+      },
+      "expect": "diverge",
+      "mitigation": "CLI 플래그 규칙. (?i) 분리. `--next-token` 처럼 앞에 낱말이 붙은 token 은 식별자 전체로 다시 가른다(credential_name)."
+    },
+    {
+      "id": "regex/secret-url",
+      "kind": "regex",
+      "input": {
+        "pattern": "\\b[a-z][a-z0-9+.\\-]*://([^\\s/:@]+:([^\\s/@]+))@",
+        "text": "postgres://admin:<password>@db mysql://u:p4ss@h/x"
+      },
+      "expect": "match",
+      "mitigation": "URL userinfo 규칙. inline flag 가 없고 ASCII 범위라 그대로 옮겨도 된다. 미매치 그룹은 null 로 통일한다."
+    },
+    {
+      "id": "regex/secret-pem",
+      "kind": "regex",
+      "input": {
+        "pattern": "(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----(.*?)-----END [A-Z ]*PRIVATE KEY-----)",
+        "text": "-----BEGIN RSA PRIVATE KEY-----\n<key>\n-----END RSA PRIVATE KEY-----"
+      },
+      "expect": "diverge",
+      "mitigation": "PEM 규칙. (?s) 를 JS 의 s flag 로 옮긴다 — 없으면 . 이 줄바꿈을 건너지 못한다."
+    },
+    {
+      "id": "regex/placeholder",
+      "kind": "regex",
+      "input": {
+        "pattern": "<[^<>\\n]{1,200}>",
+        "text": "token=<TOKEN>` 과 <your password>. 그리고 <a<b>>"
+      },
+      "expect": "match",
+      "mitigation": "자리표시 규칙. 명시적 문자 집합이라 방언 차이가 없다."
+    },
+    {
+      "id": "regex/segment-break",
+      "kind": "regex",
+      "input": {
+        "pattern": "[_.\\-\\s]+|(?<=[a-z0-9])(?=[A-Z])",
+        "text": "nextPageToken GITHUB_TOKEN value-token.id"
+      },
+      "expect": "match",
+      "mitigation": "식별자 분할(segments). 폭 0 lookbehind/lookahead 매치를 JS matchAll 도 같은 자리에서 낸다. 분할 뒤 비교는 lower() 로 하고, 대문자 판정(str.isupper)은 ASCII 밖에서 다르니 같이 옮길 때 확인한다."
+    },
+    {
+      "id": "regex/credential-key",
+      "kind": "regex",
+      "input": {
+        "pattern": "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)$",
+        "text": "value_token\npassword\ntokens\nclient-secret"
+      },
+      "expect": "diverge",
+      "mitigation": "JSON key 이름 규칙. (?i) 분리. $ 는 m flag 에서 줄 끝이다 — probe 는 두 쪽 모두 m 을 켠다."
+    },
+    {
+      "id": "regex/secret-bearer",
+      "kind": "regex",
+      "input": {
+        "pattern": "(?i)\\b(?:bearer|basic)\\s+([A-Za-z0-9._\\-+/=]{8,})",
+        "text": "Authorization: Bearer abcdefghijkl / Basic <token>"
+      },
+      "expect": "diverge",
+      "mitigation": "인증 헤더 규칙. (?i) 분리. 값 문자 집합에 < 가 없어 자리표시는 처음부터 걸리지 않는다."
+    },
+    {
+      "id": "regex/secret-prefix",
+      "kind": "regex",
+      "input": {
+        "pattern": "\\b(sk-[A-Za-z0-9_\\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9\\-]{10,}|AIza[A-Za-z0-9_\\-]{20,})",
+        "text": "sk-abcdefghijklmnopqrstuvwxyz0123 ghp_abcdefghijklmnop1234 xoxb-1234567890-abc"
+      },
+      "expect": "match",
+      "mitigation": "알려진 토큰 접두 규칙. ASCII 범위의 명시적 집합이라 그대로 옮겨도 된다."
     }
   ]
 }

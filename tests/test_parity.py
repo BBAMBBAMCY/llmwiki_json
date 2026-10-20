@@ -14,7 +14,7 @@ import unicodedata
 import unittest
 from pathlib import Path
 
-from tests.support import REPO
+from tests.support import REPO, llmwiki
 
 PARITY = REPO / "tools" / "parity"
 CASES = PARITY / "cases.json"
@@ -41,6 +41,14 @@ class CorpusShapeTest(unittest.TestCase):
             self.assertIn(case["kind"], KINDS, case["id"])
             self.assertIn(case["expect"], {"match", "diverge"}, case["id"])
             self.assertTrue(case["mitigation"].strip(), f"{case['id']}: 완화책을 적어라")
+
+    def test_the_live_secret_rules_are_in_the_corpus(self) -> None:
+        """비밀 규칙을 바꾸면 TS 로 옮길 때 막아야 할 자리도 바뀐다 — corpus 가 실제 패턴을 들고 있다."""
+        patterns = {case["input"]["pattern"] for case in self.cases if case["kind"] == "regex"}
+        live = [rule[0] for rule in llmwiki.T.SECRET_RULES] + [
+            llmwiki.T.PLACEHOLDER, llmwiki.T.SEGMENT_BREAK, llmwiki.T.CREDENTIAL_KEY]
+        for pattern in live:
+            self.assertIn(pattern.pattern, patterns)
 
     def test_the_python_oracle_answers_every_case(self) -> None:
         proc = subprocess.run([sys.executable, str(PARITY / "probe.py")],
