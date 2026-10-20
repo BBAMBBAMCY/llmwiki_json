@@ -83,8 +83,8 @@ class SourceLayoutTest(unittest.TestCase):
     def test_the_readme_describes_no_one_machine(self) -> None:
         """README 는 프레임워크 설명이다 — 한 기계의 운영 기록(개인 LaunchAgent 이름 등)을 담지 않는다."""
         readme = (REPO / "README.md").read_text(encoding="utf-8")
-        for personal in ("com.oprimed", "이 컴퓨터에는"):
-            self.assertNotIn(personal, readme)
+        self.assertIsNone(re.search(r"\bcom\.[a-z0-9-]+\.llmwiki", readme))     # 기계에 설치한 LaunchAgent 이름
+        self.assertNotIn("이 컴퓨터에는", readme)
 
     def test_derived_artifacts_are_gitignored(self) -> None:
         ignored = (REPO / ".gitignore").read_text(encoding="utf-8").splitlines()
