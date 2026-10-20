@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import html
 import json
 import math
@@ -1678,7 +1679,7 @@ def relink(page: dict[str, Any], remap: dict[str, str]) -> list[dict[str, Any]]:
     return body + curated
 
 
-def replace_block(page: dict[str, Any], old_id: str, new: dict[str, Any]) -> dict[str, Any]:
+def swap_block(page: dict[str, Any], old_id: str, new: dict[str, Any]) -> dict[str, Any]:
     """The page with `old_id` swapped for `new`, same position; the old id becomes an alias."""
     new_id = new["id"]
     out = dict(page)
@@ -1693,7 +1694,6 @@ def replace_block(page: dict[str, Any], old_id: str, new: dict[str, Any]) -> dic
         aliases[old_id] = new_id
         aliases.pop(new_id, None)
         out["block_aliases"] = dict(sorted(aliases.items()))
-    out["links"] = relink(out, {old_id: new_id})
     return out
 
 
@@ -1743,8 +1743,9 @@ def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
     if new == old:
         return result
 
-    updated = replace_block(page, old_id, new)
-    declared = {link_key(l.get("target", "")) for l in page.get("links") or [] if l.get("kind", "wiki") == "wiki"}
+    updated = swap_block(page, old_id, new)
+    updated["links"] = relink(updated, {old_id: new["id"]})
+    declared ={link_key(l.get("target", "")) for l in page.get("links") or [] if l.get("kind", "wiki") == "wiki"}
     kept = {link_key(l["target"]) for l in updated["links"] if l["kind"] == "wiki"}
     if declared - kept:
         result["dropped_links"] = sorted(declared - kept)
@@ -1775,6 +1776,226 @@ def read_fragment(text: str | None, file: str | None) -> str:
     if file is None and sys.stdin.isatty():
         raise WikiError("edit: 바꿀 markdown 조각을 --text, --file 또는 stdin 으로 준다")
     return sys.stdin.read()
+
+
+# --------------------------------------------------------------------------- repair
+# block 이 마지막으로 정본에서 다시 만들어진 기록. 이 뒤의 updated·history 가 '그 뒤에 바뀌었다' 는 표시다.
+BASE_ACTIONS = frozenset({"ingested", "created", "edited", "repaired"})
+
+
+def render_data(page_id: str, kind: str, data: Any) -> str | None:
+    """`data` 로 그대로 다시 파싱되는 markdown — 그런 글을 만들 수 없으면 None."""
+    if not isinstance(data, dict):
+        return None
+    text = data.get("text")
+    candidates: list[str] = []
+    if kind == "heading" and isinstance(data.get("level"), int) and isinstance(text, str):
+        candidates.append("#" * data["level"] + " " + text)
+    elif kind == "paragraph" and isinstance(text, str):
+        candidates.append(text)
+    elif kind == "quote" and isinstance(text, str):
+        candidates.append("\n".join(f"> {line}".rstrip() for line in text.split("\n")))
+    elif kind == "list":
+        if isinstance(text, str):
+            candidates.append(text)
+        items = data.get("items")
+        if isinstance(items, list) and all(isinstance(item, str) for item in items):
+            candidates.append("\n".join(f"{n}. {item}" if data.get("ordered") else f"- {item}"
+                                        for n, item in enumerate(items, 1)))
+    elif kind == "table" and isinstance(data.get("rows"), list):
+        rows = data["rows"]
+        if all(isinstance(row, list) and all(isinstance(cell, str) for cell in row) for row in rows):
+            candidates.append("\n".join("| " + " | ".join(row) + " |" for row in rows))
+    elif kind == "code" and isinstance(text, str):
+        candidates.append(f"```{data.get('language') or ''}\n{text}\n```")
+    elif kind == "thematic_break":
+        candidates.append("---")
+    for raw in candidates:
+        parsed = parse_one(page_id, raw)
+        if parsed and parsed["kind"] == kind and parsed["data"] == data:
+            return raw
+    return None
+
+
+def snapshot_blocks(page: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """ingest 때 남긴 원문(`source_snapshot`) 의 block — 손대기 전의 모양이다."""
+    snapshot = page.get("source_snapshot")
+    if not isinstance(snapshot, dict) or snapshot.get("format") != "markdown" \
+            or not isinstance(snapshot.get("text"), str):
+        return {}
+    return parse_blocks(page["id"], split_frontmatter(snapshot["text"])[1])[0]
+
+
+def change_recorded(page: dict[str, Any]) -> bool:
+    """마지막으로 정본에서 다시 만든 뒤(ingest·생성·edit·repair) page 가 바뀌었다고 적혀 있는가.
+
+    `updated` 가 그 기록의 날짜보다 새거나, 그 기록 뒤에 history 가 더 붙었으면 그렇다.
+    """
+    history = [h for h in page.get("history") or [] if isinstance(h, dict)]
+    base = max((i for i, h in enumerate(history) if h.get("action") in BASE_ACTIONS), default=-1)
+    base_date = str(history[base].get("at") or "")[:10] if base >= 0 else str(page.get("created") or "")
+    return base < len(history) - 1 or str(page.get("updated") or "") > base_date
+
+
+def rebuilt_block(page: dict[str, Any], block: dict[str, Any], raw: str) -> dict[str, Any]:
+    """`raw` 를 정본으로 다시 만든 block (id 는 호출자가 정한다). 판정은 본문에서 나오지 않아 그대로 둔다."""
+    kind = block["kind"]
+    if kind in DATA_FREE_KINDS:
+        new = dict(block, refs=refs_in(raw), source_text=raw, fingerprint=block_fingerprint(kind, raw))
+    else:
+        new = dict(parse_one(page["id"], raw) or {})
+        if new.get("kind") == kind and "resolution" in block:
+            new["resolution"] = block["resolution"]
+    return new
+
+
+def drift_diff(source_text: str, data: Any, rendered: str | None) -> list[str]:
+    other = rendered if rendered is not None else json.dumps(data, ensure_ascii=False, indent=1)
+    return [redact(line) for line in difflib.unified_diff(
+        source_text.splitlines(), other.splitlines(), "source_text", "data", lineterm="", n=1)]
+
+
+def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
+                   snapshot: dict[str, dict[str, Any]], recorded: bool) -> dict[str, Any] | None:
+    """어긋난 block 하나의 진단: 무엇이 어긋났고, 어느 쪽이 새것이며, 고친 block 은 무엇인가.
+
+    source_text 와 data 가 서로 맞으면 지문·refs·id 만 다시 만든다. 둘이 다르면 원본(지문이나 ingest
+    snapshot 과 같은 쪽)을 가리고, 그 뒤의 변경이 updated·history 에 적혀 있을 때만 다른 쪽을 새것으로
+    본다. 그 밖에는 고치지 않는다(`new` 가 None).
+    """
+    problems = block_drift(page, bid, block)
+    if not problems:
+        return None
+    kind, text, data = block["kind"], block["source_text"], block.get("data")
+    out: dict[str, Any] = {"page_id": page["id"], "block_id": bid, "problems": problems, "diff": [],
+                           "verdict": "undecided", "new": None}
+    parsed = parse_one(page["id"], text) if kind not in DATA_FREE_KINDS else None
+    if kind in DATA_FREE_KINDS or (parsed and parsed["kind"] == kind and parsed["data"] == data):
+        out.update(verdict="derived", reason="source_text 와 data 는 같다 — 지문·refs·id 만 다시 만든다",
+                   new=rebuilt_block(page, block, text))
+        return out
+    rendered = render_data(page["id"], kind, data)
+    out["diff"] = drift_diff(text, data, rendered)
+    original = snapshot.get(bid)
+    fingerprint = block.get("fingerprint")
+    source_is_original = fingerprint == block_fingerprint(kind, text) or bool(
+        original and original.get("source_text") == text)
+    data_is_original = bool(rendered is not None and fingerprint == block_fingerprint(kind, rendered)) or bool(
+        original and original.get("data") == data)
+    if source_is_original == data_is_original:
+        out["reason"] = ("둘 다 원본과 같다고 나온다" if source_is_original else
+                         "어느 쪽이 원본인지 알 수 없다 — 지문도 ingest snapshot 도 둘 다와 다르다")
+    elif not recorded:
+        out["reason"] = (f"{'data' if source_is_original else 'source_text'} 가 원본과 다르지만 "
+                         "updated·history 에 그 뒤의 변경 기록이 없다")
+    elif source_is_original and rendered is None:
+        out["reason"] = "data 가 새것이지만 같은 data 로 읽히는 markdown 을 만들 수 없다"
+    elif source_is_original:
+        out.update(verdict="data", reason="data 가 새것이다 — source_text 를 data 에서 다시 쓴다",
+                   new=rebuilt_block(page, block, rendered))
+    elif parsed is None:
+        out["reason"] = "source_text 가 새것이지만 block 하나로 읽히지 않는다"
+    else:
+        out.update(verdict="source_text", reason="source_text 가 새것이다 — data 를 다시 파싱한다",
+                   new=rebuilt_block(page, block, text))
+    return out
+
+
+def mend_links(page: dict[str, Any], remap: dict[str, str], rederived: set[str]) -> list[dict[str, Any]]:
+    """block id 를 새 id 로 잇고, `links` 에 빠진 본문 `[[링크]]` 를 더한다.
+
+    다시 만든 block(`rederived`) 에 달린 wiki link 는 그 block 의 새 본문을 따른다 — 옛 본문에서 나온
+    link 다. 그 밖의 link 는 지우지 않는다.
+    """
+    links = []
+    for link in page.get("links") or []:
+        link = dict(link)
+        if link.get("block_id") in remap:
+            link["block_id"] = remap[link["block_id"]]
+        if link.get("kind", "wiki") == "wiki" and link.get("block_id") in rederived:
+            refs = {link_key(ref) for ref in refs_in(page["blocks"][link["block_id"]]["source_text"])}
+            if link_key(str(link.get("target") or "")) not in refs:
+                continue
+        links.append(link)
+    declared = {link_key(str(l.get("target") or "")) for l in links if l.get("kind", "wiki") == "wiki"}
+    for link in page_links(page["id"], page["blocks"], page["block_order"]):
+        if link_key(link["target"]) not in declared:
+            declared.add(link_key(link["target"]))
+            links.append(link)
+    return links
+
+
+def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
+    """`validate` 의 drift 를 판정할 수 있는 만큼 고친다. 판정할 수 없는 것은 목록으로만 남긴다."""
+    validator = SchemaValidator.load(ws)
+    fixed: list[dict[str, Any]] = []
+    undecided: list[dict[str, Any]] = []
+    pending: list[tuple[str, dict[str, Any], int]] = []
+    for rel, page in ws.load_documents():
+        if not consistency_errors(page):
+            continue
+        snapshot, recorded = snapshot_blocks(page), change_recorded(page)
+        work, remap, rederived, count = page, {}, set(), 0
+        for bid in list(page["block_order"]):
+            found = diagnose_block(work, bid, work["blocks"][bid], snapshot, recorded)
+            if found is None:
+                continue
+            new = found.pop("new")
+            if new is None:
+                undecided.append(found)
+                continue
+            new["id"] = bid if carries_fingerprint(work, bid, new["fingerprint"]) \
+                else fresh_block_id(work, new["fingerprint"], keep=bid)
+            work = swap_block(work, bid, new)
+            if new["id"] != bid:
+                remap[bid] = new["id"]
+            rederived.add(new["id"])
+            found["new_id"] = new["id"]
+            fixed.append(found)
+            count += 1
+        work = dict(work, links=mend_links(work, remap, rederived))
+        for problem in consistency_errors(work):
+            if problem.startswith(f"{page['id']}: wiki link"):
+                undecided.append({"page_id": page["id"], "block_id": "", "problems": [problem], "diff": [],
+                                  "verdict": "undecided",
+                                  "reason": "본문에 없는 wiki link 는 지우지 않는다 — edit 로 본문에 넣거나 "
+                                            "kind 를 related 로 바꾼다"})
+        if work != page:
+            work["history"] = [*page.get("history", []),
+                               {"at": today(), "action": "repaired", "actor": "llmwiki-cli",
+                                "note": f"{count} block(s) re-derived from source_text/data"}]
+            errors = validate_page(work, validator)
+            if errors:
+                raise WikiError("\n".join(errors))
+            pending.append((rel, work, count))
+    report: dict[str, Any] = {"dry_run": dry_run, "fixed": fixed, "undecided": undecided,
+                              "pages": [work["id"] for _rel, work, _n in pending]}
+    if dry_run or not pending:
+        return report
+    for rel, work, count in pending:
+        write_document(ws, rel, work)
+        append_log(ws, {"action": "repair", "page_id": work["id"], "blocks": count, "dest": rel})
+    report["build"] = build(ws, changed=sorted({rel for rel, _w, _n in pending}))
+    return report
+
+
+def print_repair(report: dict[str, Any]) -> None:
+    for item in report["fixed"] + report["undecided"]:
+        where = f"{item['page_id']}#{item['block_id']}" if item["block_id"] else item["page_id"]
+        status = "고침" if item["verdict"] != "undecided" else "판정 불가"
+        print(f"{where}  {status} — {item['reason']}")
+        for problem in item["problems"]:
+            print(f"  · {problem}")
+        for line in item["diff"]:
+            print(f"  {line}")
+        if item.get("new_id") and item["new_id"] != item["block_id"]:
+            print(f"  → {item['new_id']}")
+    if report["undecided"]:
+        print(f"판정할 수 없는 {len(report['undecided'])}건 (고치지 않았다):")
+        for item in report["undecided"]:
+            print(f"  {item['page_id']}#{item['block_id']}" if item["block_id"] else f"  {item['page_id']}")
+    tail = " (dry-run — 아무것도 쓰지 않았다)" if report["dry_run"] else ""
+    print(f"{len(report['fixed'])} fixed, {len(report['undecided'])} undecided{tail}")
 
 
 # --------------------------------------------------------------------------- search
@@ -1841,6 +2062,11 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument("--dry-run", action="store_true")
     ed.add_argument("--fixtures", action="store_true")
 
+    rep = sub.add_parser("repair", help="re-derive drifted blocks where history/updated tell which side is newer")
+    rep.add_argument("--dry-run", action="store_true", help="print the diffs and verdicts, write nothing")
+    rep.add_argument("--json", action="store_true", dest="as_json")
+    rep.add_argument("--fixtures", action="store_true")
+
     for name, help_text in (("build", "regenerate index/ (incl. search.sqlite) and viewer public data"),
                             ("validate", "schema + structural checks"),
                             ("lint", "links, conflicts, orphans, stale index")):
@@ -1898,6 +2124,13 @@ def run(argv: list[str] | None = None) -> int:
     elif command == "edit":
         emit(edit(ws, args.selector, args.block, read_fragment(args.text, args.file),
                   dry_run=args.dry_run))
+    elif command == "repair":
+        report = repair(ws, dry_run=args.dry_run)
+        if args.as_json:
+            emit(report)
+        else:
+            print_repair(report)
+        return 1 if report["undecided"] else 0
     elif command == "build":
         emit(build(ws, changed=args.changed, full=args.full, heading_paths=args.heading_paths))
     elif command in {"validate", "lint"}:
