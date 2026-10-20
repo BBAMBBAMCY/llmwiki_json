@@ -88,6 +88,9 @@ INGEST_PROMPT = (
 # groups.json 은 모르는 프로젝트를 만났을 때 ingest 가 직접 등록하는 파일이라,
 # 빼 두면 커밋되지 않은 채 남아 다음 차례가 dirty tree 에서 멈춘다.
 COMMIT_PATHS = ("wiki", "index", "viewer/public/data", "tools/config/groups.json")
+# tag 허용 목록도 같다 — 새 tag 가 필요하면 에이전트가 목록에 더한다. 목록은 선택이라 있을 때만 넣는다
+# (없는 경로를 git add 에 넘기면 add 전체가 실패한다).
+OPTIONAL_COMMIT_PATHS = ("tools/config/tags.json",)
 
 # raw/ 에 있어도 소스가 아닌 것들. `raw/.llmwikiignore` 로 더 넣을 수 있다.
 DEFAULT_IGNORE = ("README*", "readme*", "*.gitkeep", "*.lock", "*.tmp", "*.part",
@@ -295,7 +298,7 @@ def pull_first(root: Path, remote: str, branch: str) -> tuple[bool, str]:
     # 에이전트를 그 위에 풀어놓지 않는다. status 자체가 실패하면 멈춘다.
     # 검사 범위는 루틴이 직접 쓰는 경로뿐이다. viewer/ 를 고치는 중이라고 해서
     # 위키 ingest 까지 세울 이유는 없다 — 그렇게 하면 손대는 김에 루틴이 멈춘다.
-    code, out = git(root, "status", "--porcelain", "--", *COMMIT_PATHS)
+    code, out = git(root, "status", "--porcelain", "--", *commit_paths(root))
     if code != 0:
         return False, f"git status 실패 — 상태를 알 수 없어 멈춘다: {out.splitlines()[-1] if out else code}"
     if out.strip():
@@ -338,8 +341,15 @@ def push_pending(root: Path, remote: str, branch: str) -> tuple[bool, str]:
     return True, f"밀리지 않았던 커밋을 {remote}/{branch} 로 밀었다"
 
 
+def commit_paths(root: Path) -> tuple[str, ...]:
+    """루틴이 커밋하는 경로 — 선택 설정은 있거나 이미 추적 중일 때만."""
+    optional = tuple(rel for rel in OPTIONAL_COMMIT_PATHS
+                     if (root / rel).exists() or git(root, "ls-files", "--", rel)[1].strip())
+    return COMMIT_PATHS + optional
+
+
 def changed_paths(root: Path) -> list[str]:
-    code, out = git(root, "status", "--porcelain", "--", *COMMIT_PATHS)
+    code, out = git(root, "status", "--porcelain", "--", *commit_paths(root))
     if code != 0:
         return []
     return [line[3:].strip() for line in out.splitlines() if line.strip()]
@@ -353,7 +363,7 @@ def commit_and_push(root: Path, remote: str, branch: str,
     changed = changed_paths(root)
     if not changed:
         return True, "바뀐 정본 없음 — 커밋하지 않는다"
-    code, out = git(root, "add", "--", *COMMIT_PATHS)
+    code, out = git(root, "add", "--", *commit_paths(root))
     if code != 0:
         return False, f"git add 실패: {out}"
     message = f"위키를 자동으로 최신 소스에 맞춘다 ({stamp()})"

@@ -410,6 +410,26 @@ class GitDisciplineTest(RoutineCase):
         _, out = self.git("show", "--name-only", "--format=", "HEAD")
         self.assertIn("tools/config/groups.json", out)
 
+    def test_the_tag_list_is_committed_when_there_is_one(self) -> None:
+        # 새 tag 가 필요하면 에이전트가 tools/config/tags.json 에 더한다 — 이것도 남으면 dirty tree 다.
+        self.init_repo()
+        (self.root_path / "wiki" / "concepts" / "fresh.json").write_text("[]", encoding="utf-8")
+        ok, detail = routine.commit_and_push(self.root_path, "private", "main", push=False)
+        self.assertTrue(ok, detail)                                  # 목록이 없어도 add 가 깨지지 않는다
+        _, out = self.git("show", "--name-only", "--format=", "HEAD")
+        self.assertIn("fresh.json", out)
+        tags = self.root_path / "tools" / "config" / "tags.json"
+        tags.write_text('{"tags": ["release"]}', encoding="utf-8")
+        self.assertIn("tools/config/tags.json", routine.changed_paths(self.root_path))
+        ok, detail = routine.commit_and_push(self.root_path, "private", "main", push=False)
+        self.assertTrue(ok, detail)
+        _, out = self.git("show", "--name-only", "--format=", "HEAD")
+        self.assertIn("tools/config/tags.json", out)
+        tags.unlink()                                                # 지운 것도 커밋된다
+        ok, detail = routine.commit_and_push(self.root_path, "private", "main", push=False)
+        self.assertTrue(ok, detail)
+        self.assertEqual(routine.changed_paths(self.root_path), [])
+
     def test_leftover_from_a_broken_run_is_finished_next_time(self) -> None:
         # build 가 깨지거나 에이전트가 죽어 커밋되지 못한 변경이 남으면, 그
         # 다음 차례부터 전부 더러운 트리에서 멈춘다. 우리가 남긴 것은 우리가
