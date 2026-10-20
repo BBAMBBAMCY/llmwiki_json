@@ -74,6 +74,7 @@ python3 scripts/llmwiki.py query "검색어"
 | 명령 | 하는 일 |
 | --- | --- |
 | `ingest <파일>` | raw 소스 1건을 정본 page로 기록. `--type` `--project` `--summary` `--update` `--dry-run` |
+| `edit <page> --block <id>` | block 하나를 markdown 조각(`--text`, `--file`, 없으면 stdin)으로 다시 쓴다. source_text·data·fingerprint·refs와 page `links`를 함께 다시 만들고, 내용이 바뀌면 block id도 새 지문으로 바뀐다 — 옛 id는 page `block_aliases`에 남아 `get`이 계속 찾는다. `--dry-run` |
 | `build` | 정본 → `index/*.json` + `index/search.sqlite` + `viewer/public/data/**` 결정적 재생성. `--changed <파일…>`(바뀐 파일 힌트 — 그 page 만 색인에 갈아 끼우는 증분, 힌트 밖 변경이 보이면 전량), `--full`, `--heading-paths`(H6, 기본 꺼짐) |
 | `validate` | 스키마·구조 검증 (오류만) |
 | `lint` | 오류 + 경고: 미존재 링크, 미판정 상충, 고아, 빈 summary, stale index. `--json` |
@@ -123,7 +124,7 @@ llmwiki.py outline sample-topic                      # 섹션 목록
 llmwiki.py render sample-topic --section block:sample-topic:ab12:1   # 그 섹션만
 ```
 
-block id는 `block:<slug>:<내용 지문>:<중복 순번>` 형태라, 페이지 다른 곳이 바뀌어도 유지됩니다.
+block id는 `block:<slug>:<내용 지문>:<중복 순번>` 형태라, 페이지 다른 곳이 바뀌어도 유지됩니다. `edit`로 내용이 바뀐 block은 새 지문의 id를 받고, 옛 id는 page의 `block_aliases`(옛 id → 지금 id)를 거쳐 계속 같은 block으로 해석됩니다 — `get`, `render`, `llmwiki_get` 모두 같습니다.
 
 ## 자동 컨텍스트 주입
 

@@ -22,6 +22,7 @@
       "additionalProperties": {"$ref": "#/$defs/block"}
     },
     "block_order": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "block_aliases": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^block:"}},
     "links": {"type": "array", "items": {"$ref": "#/$defs/link"}},
     "history": {"type": "array", "items": {"$ref": "#/$defs/history"}},
     "source_snapshot": {"$ref": "#/$defs/sourceSnapshot"}

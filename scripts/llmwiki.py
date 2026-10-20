@@ -316,12 +316,16 @@ def block_fingerprint(kind: str, raw: str) -> str:
     return sha(kind + "\0" + re.sub(r"\s+", " ", raw).strip(), 16)
 
 
+def block_id_of(page_id: str, fingerprint: str, occurrence: int) -> str:
+    return f"block:{page_id.removeprefix('page:')}:{fingerprint}:{occurrence}"
+
+
 def make_block(page_id: str, kind: str, raw: str, data: dict[str, Any], occurrence: int,
                resolution: dict[str, Any] | None = None) -> dict[str, Any]:
     """Content-addressed block id: stable across edits elsewhere on the page."""
     fingerprint = block_fingerprint(kind, raw)
     block: dict[str, Any] = {
-        "id": f"block:{page_id.removeprefix('page:')}:{fingerprint}:{occurrence}",
+        "id": block_id_of(page_id, fingerprint, occurrence),
         "kind": kind, "data": data, "refs": refs_in(raw),
         "source_text": raw, "fingerprint": fingerprint,
     }
@@ -645,6 +649,13 @@ def validate_page(page: dict[str, Any], validator: SchemaValidator | None = None
         status = block.get("resolution", {}).get("status")
         if status is not None and status not in {"resolved", "unresolved"}:
             errors.append(f"{pid}:{bid}: invalid resolution status {status!r}")
+    aliases = page.get("block_aliases") or {}
+    if isinstance(aliases, dict):
+        for old, live in aliases.items():
+            if old in blocks:
+                errors.append(f"{pid}: block alias {old} is a live block id")
+            if live not in blocks:
+                errors.append(f"{pid}: block alias {old} points at unknown block {live}")
     for idx, link in enumerate(page["links"]):
         if link.get("kind") not in ALLOWED_LINK_KINDS:
             errors.append(f"{pid}: link[{idx}] invalid kind {link.get('kind')}")
@@ -1271,17 +1282,31 @@ def split_address(selector: str) -> tuple[str, str | None]:
     return selector, None
 
 
-def find_page(ws: Workspace, selector: str) -> dict[str, Any]:
+def find_document(ws: Workspace, selector: str) -> tuple[str, dict[str, Any]]:
+    """(canonical shard, page) — the shard is where a write to this page has to go."""
     selector = norm(selector)
-    pages = ws.load_pages()
-    for page in pages:
+    docs = ws.load_documents()
+    for rel, page in docs:
         if selector in {page["id"], page["slug"], page["id"].removeprefix("page:")}:
-            return page
+            return rel, page
     # Same tolerance the graph uses: a title or a differently-cased slug still lands.
-    match = page_lookup(pages).get(link_key(selector))
+    match = page_lookup(page for _, page in docs).get(link_key(selector))
     if match:
-        return match
+        return next(rel for rel, page in docs if page is match), match
     raise WikiError(f"page not found: {selector}")
+
+
+def find_page(ws: Workspace, selector: str) -> dict[str, Any]:
+    return find_document(ws, selector)[1]
+
+
+def live_block_id(page: dict[str, Any], block_id: str) -> str | None:
+    """The block's current id: itself, or the id an `edit` gave it (page `block_aliases`)."""
+    blocks = page.get("blocks") or {}
+    if block_id in blocks:
+        return block_id
+    target = (page.get("block_aliases") or {}).get(block_id)
+    return target if target in blocks else None
 
 
 def find_block(ws: Workspace, block_id: str, page: dict[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1290,6 +1315,11 @@ def find_block(ws: Workspace, block_id: str, page: dict[str, Any] | None = None)
         block = candidate["blocks"].get(block_id)
         if block:
             return candidate, block
+    # An id that `edit` replaced keeps resolving to the block that took its place.
+    for candidate in candidates:
+        live = live_block_id(candidate, block_id)
+        if live:
+            return candidate, candidate["blocks"][live]
     # Allow addressing a block by its bare fingerprint too.
     for candidate in candidates:
         for bid, block in candidate["blocks"].items():
@@ -1353,6 +1383,7 @@ def outline(page: dict[str, Any]) -> list[dict[str, Any]]:
 def section(page: dict[str, Any], block_id: str) -> list[dict[str, Any]]:
     """The heading block plus every block up to the next heading of the same/higher level."""
     order = page["block_order"]
+    block_id = live_block_id(page, block_id) or block_id
     if block_id not in order:
         raise WikiError(f"{page['id']}: no block {block_id}")
     start = order.index(block_id)
@@ -1544,6 +1575,140 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
     return result
 
 
+# --------------------------------------------------------------------------- edit
+def write_document(ws: Workspace, rel: str, page: dict[str, Any]) -> None:
+    """Write one page back to its shard; a shard holding several pages keeps the others."""
+    path = ws.root / rel
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(value, list):
+        index = next((i for i, item in enumerate(value)
+                      if isinstance(item, dict) and item.get("id") == page["id"]), None)
+        if index is None:
+            raise WikiError(f"{rel} no longer holds {page['id']}")
+        value[index] = page
+    else:
+        value = page
+    dump(path, value, pretty=True)
+
+
+def relink(page: dict[str, Any], remap: dict[str, str]) -> list[dict[str, Any]]:
+    """`links` again from the body: wiki links come from the blocks' `[[…]]`.
+
+    A wiki link is a `[[link]]` in some block, so those are regenerated; the
+    curated kinds (source, supersedes, related) stay, re-pointed at the new
+    block id when the block they anchor to was replaced.
+    """
+    body = page_links(page["id"], page["blocks"], page["block_order"])
+    curated = []
+    for link in page.get("links") or []:
+        if link.get("kind", "wiki") == "wiki":
+            continue
+        link = dict(link)
+        if link.get("block_id") in remap:
+            link["block_id"] = remap[link["block_id"]]
+        curated.append(link)
+    return body + curated
+
+
+def replace_block(page: dict[str, Any], old_id: str, new: dict[str, Any]) -> dict[str, Any]:
+    """The page with `old_id` swapped for `new`, same position; the old id becomes an alias."""
+    new_id = new["id"]
+    out = dict(page)
+    out["blocks"] = {(new_id if bid == old_id else bid): (new if bid == old_id else block)
+                     for bid, block in page["blocks"].items()}
+    out["block_order"] = [new_id if bid == old_id else bid for bid in page["block_order"]]
+    if new_id != old_id:
+        # Flat table: every older id points straight at the live one, and an id
+        # that is live again (an edit back to earlier content) is no alias.
+        aliases = {old: (new_id if live == old_id else live)
+                   for old, live in (page.get("block_aliases") or {}).items()}
+        aliases[old_id] = new_id
+        aliases.pop(new_id, None)
+        out["block_aliases"] = dict(sorted(aliases.items()))
+    out["links"] = relink(out, {old_id: new_id})
+    return out
+
+
+def fresh_block_id(page: dict[str, Any], fingerprint: str, keep: str = "") -> str:
+    """`block:<slug>:<fingerprint>:<n>` with the smallest n no other block of the page holds."""
+    taken = set(page["blocks"]) - {keep}
+    occurrence = 1
+    while block_id_of(page["id"], fingerprint, occurrence) in taken:
+        occurrence += 1
+    return block_id_of(page["id"], fingerprint, occurrence)
+
+
+def carries_fingerprint(page: dict[str, Any], block_id: str, fingerprint: str) -> bool:
+    prefix = block_id_of(page["id"], fingerprint, 0)[:-1]
+    return block_id.startswith(prefix) and block_id[len(prefix):].isdigit()
+
+
+def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
+         dry_run: bool = False) -> dict[str, Any]:
+    """Rewrite one block from a markdown fragment; everything derived from it follows.
+
+    source_text, data, fingerprint and refs come from the fragment, and the
+    page's wiki `links` are regenerated from the body. When the content changes
+    the block takes the id of its new fingerprint; the old id stays in the
+    page's `block_aliases`, so `get` keeps finding it.
+    """
+    rel, page = find_document(ws, selector)
+    old_id = live_block_id(page, norm(block))
+    if old_id is None:
+        old_id = find_block(ws, norm(block), page)[1]["id"]
+    label = f"{page['id']}#{old_id}"
+    text = str(fragment or "").strip("\n")
+    assert_no_secrets(text, label)
+    parsed, order = parse_blocks(page["id"], text)
+    if len(order) != 1:
+        raise WikiError(f"{label}: edit 는 block 하나를 받는다 — 조각이 {len(order)}개 block 으로 읽혔다")
+    old = page["blocks"][old_id]
+    new = parsed[order[0]]
+    if new["kind"] == old.get("kind") and "resolution" in old:
+        new["resolution"] = old["resolution"]   # 판정은 본문에서 나오지 않는다 — 고쳐 쓴다고 풀리지 않는다
+    if carries_fingerprint(page, old_id, new["fingerprint"]):
+        new["id"] = old_id
+    else:
+        new["id"] = fresh_block_id(page, new["fingerprint"], keep=old_id)
+    result = {"page_id": page["id"], "block_id": new["id"], "previous": old_id, "dest": rel,
+              "changed": new != old, "dry_run": dry_run}
+    if new == old:
+        return result
+
+    updated = replace_block(page, old_id, new)
+    declared = {link_key(l.get("target", "")) for l in page.get("links") or [] if l.get("kind", "wiki") == "wiki"}
+    kept = {link_key(l["target"]) for l in updated["links"] if l["kind"] == "wiki"}
+    if declared - kept:
+        result["dropped_links"] = sorted(declared - kept)
+    stamp = today()
+    updated["updated"] = stamp
+    note = old_id if new["id"] == old_id else f"{old_id} → {new['id']}"
+    updated["history"] = [*page.get("history", []),
+                          {"at": stamp, "action": "edited", "actor": "llmwiki-cli", "note": note}]
+    errors = validate_page(updated, SchemaValidator.load(ws))
+    if errors:
+        raise WikiError("\n".join(errors))
+    if dry_run:
+        result["block"] = new
+        return result
+    write_document(ws, rel, updated)
+    append_log(ws, {"action": "edit", "page_id": page["id"], "block_id": new["id"],
+                    "previous": old_id, "dest": rel})
+    result["build"] = build(ws, changed=[rel])
+    return result
+
+
+def read_fragment(text: str | None, file: str | None) -> str:
+    """The `edit` fragment: --text, --file PATH, or stdin (also `--file -`)."""
+    if text is not None:
+        return text
+    if file and file != "-":
+        return Path(file).read_text(encoding="utf-8")
+    if file is None and sys.stdin.isatty():
+        raise WikiError("edit: 바꿀 markdown 조각을 --text, --file 또는 stdin 으로 준다")
+    return sys.stdin.read()
+
+
 # --------------------------------------------------------------------------- search
 def open_search_index(ws: Workspace) -> "search_index.Index":
     """The built index when it is fresh, otherwise one built in memory from the canonical pages.
@@ -1599,6 +1764,15 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--update", action="store_true", help="replace an existing page, keeping created/history")
     ing.add_argument("--dry-run", action="store_true")
 
+    ed = sub.add_parser("edit", help="rewrite one block from a markdown fragment (the old id stays an alias)")
+    ed.add_argument("selector", help="page: slug, page:slug or title")
+    ed.add_argument("--block", required=True, help="block id (an id an earlier edit replaced works too)")
+    fragment = ed.add_mutually_exclusive_group()
+    fragment.add_argument("--text", help="the markdown fragment")
+    fragment.add_argument("--file", help="read the fragment from this file ('-' = stdin, the default)")
+    ed.add_argument("--dry-run", action="store_true")
+    ed.add_argument("--fixtures", action="store_true")
+
     for name, help_text in (("build", "regenerate index/ (incl. search.sqlite) and viewer public data"),
                             ("validate", "schema + structural checks"),
                             ("lint", "links, conflicts, orphans, stale index")):
@@ -1653,6 +1827,9 @@ def run(argv: list[str] | None = None) -> int:
     if command == "ingest":
         emit(ingest(ws, Path(args.input), args.type, args.project, args.summary,
                     args.update, args.dry_run))
+    elif command == "edit":
+        emit(edit(ws, args.selector, args.block, read_fragment(args.text, args.file),
+                  dry_run=args.dry_run))
     elif command == "build":
         emit(build(ws, changed=args.changed, full=args.full, heading_paths=args.heading_paths))
     elif command in {"validate", "lint"}:

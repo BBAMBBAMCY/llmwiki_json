@@ -976,8 +976,9 @@ def selector_block(selector: str) -> str:
 
 def resolve_blocks(page: dict[str, Any],
                    wanted: Iterable[str]) -> tuple[list[dict[str, Any]], list[str]]:
-    """block id 를 해석한다. 꼬리만 준 축약형(`meta`)도 받는다."""
+    """block id 를 해석한다. 꼬리만 준 축약형(`meta`)도, `edit` 가 바꾸기 전의 옛 id 도 받는다."""
     blocks = page.get("blocks") or {}
+    aliases = page.get("block_aliases") if isinstance(page.get("block_aliases"), dict) else {}
     order = [b for b in (page.get("block_order") or list(blocks)) if b in blocks]
     found: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -986,6 +987,8 @@ def resolve_blocks(page: dict[str, Any],
         key = str(raw or "").strip()
         if not key:
             continue
+        if key not in blocks and aliases.get(key) in blocks:
+            key = aliases[key]
         hit = key if key in blocks else next(
             (b for b in order if b.endswith(f":{key}") or b.split(":")[-1] == key), "")
         if not hit:

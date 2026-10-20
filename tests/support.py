@@ -118,10 +118,11 @@ class WorkspaceCase(unittest.TestCase):
     def read_json(self, rel: str) -> Any:
         return json.loads((self.root / rel).read_text(encoding="utf-8"))
 
-    def cli(self, *argv: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
+    def cli(self, *argv: str, expect: int = 0,
+            stdin: str | None = None) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, llmwiki.ENV_ROOT: str(self.root), llmwiki.ENV_NOW: FROZEN_NOW}
         proc = subprocess.run([sys.executable, str(SCRIPT), *argv], capture_output=True,
-                              text=True, env=env)
+                              text=True, env=env, input=stdin)
         self.assertEqual(proc.returncode, expect,
                          f"argv={argv}\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return proc

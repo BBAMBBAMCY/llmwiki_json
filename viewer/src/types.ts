@@ -48,7 +48,7 @@ export interface WikiBlock { id: string; kind: string; data: Record<string, unkn
 export interface WikiPage {
   schema_version: string; id: string; slug: string; title: string; type: string; created: string; updated: string;
   tags: string[]; projects: string[]; sources: string[]; raw_ref?: string | null; summary?: string;
-  blocks: Record<string, WikiBlock>; block_order: string[]; links: Array<{target: string; label?: string; anchor?: string; kind: string; block_id?: string}>;
+  blocks: Record<string, WikiBlock>; block_order: string[]; block_aliases?: Record<string, string>; links: Array<{target: string; label?: string; anchor?: string; kind: string; block_id?: string}>;
   history: Array<Record<string, string>>;
 }
 export interface MapPayload { pages: Record<string, {data_url: string; sha256: string; pointer: string; source: string}>; blocks: Record<string, unknown> }
