@@ -58,7 +58,7 @@ Docker로 정적 빌드를 실행하려면 저장소 루트에서 다음 명령�
 docker compose -f viewer/compose.yml up -d --build
 ```
 
-이 컴퓨터에는 `com.oprimed.llmwiki-json-viewer` LaunchAgent를 설치해 로그인 시 Docker Desktop과 프론트 컨테이너가 자동으로 시작되도록 운영합니다. 컨테이너에는 `restart: unless-stopped`도 적용됩니다.
+두 컨테이너(뷰어와 정본 감시자)에는 `restart: unless-stopped`가 걸려 있어, Docker 엔진이 떠 있는 한 재부팅 뒤에도 스스로 다시 뜹니다. 로그인할 때 Docker 엔진까지 자동으로 올리고 싶으면 OS의 시작 항목에 맡깁니다 — macOS는 Docker Desktop의 "로그인 시 시작" 설정이나 사용자 LaunchAgent, Linux는 `systemctl --user enable docker`(rootless) 또는 시스템 서비스, Windows는 Docker Desktop 설정입니다. 엔진이 뜬 뒤 컨테이너는 위 정책이 다시 올립니다.
 
 실데이터를 넣은 뒤에는:
 
