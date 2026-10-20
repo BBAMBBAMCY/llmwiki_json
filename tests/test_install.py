@@ -245,6 +245,15 @@ class InstallerCase(unittest.TestCase):
         path.write_text(body, encoding="utf-8")
         path.chmod(0o755)
 
+    def interpreter(self, name: str) -> str:
+        """이 시험만의 인터프리터 경로 — 지금 Python 을 부르는 wrapper. 시험이 기계의
+        /usr/bin/python3 나 sys.executable 이 무엇인지에 기대지 않게 한다."""
+        path = self.tmp / "interpreters" / name / "python3"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n', encoding="utf-8")
+        path.chmod(0o755)
+        return str(path)
+
     def payload_file(self, name: str, body: str) -> Path:
         path = self.payload / name
         path.write_text(body, encoding="utf-8")
@@ -1049,29 +1058,28 @@ class TrustStateTest(InstallerCase):
         """명령이 바뀌면 Codex 는 다시 묻는다 — verify 가 trusted 라고 하면 거짓말이다."""
         hooks = self.codex_hooks
         config = self.home / ".codex" / "config.toml"
-        self.run_installer("install", "--codex", "--no-mcp", "--no-bun", "-q",
-                           "--python", "/usr/bin/python3")
+        # 서로 다른 두 인터프리터 경로를 시험이 직접 만든다. 예전에는 /usr/bin/python3 와 sys.executable
+        # 을 썼는데, 그 둘이 같은 기계(시스템 Python 으로 시험을 돌리는 CI)에서는 명령이 바뀌지 않아 거짓 실패했다.
+        before, after = self.interpreter("before"), self.interpreter("after")
+        self.assertNotEqual(before, after)
+        self.run_installer("install", "--codex", "--no-mcp", "--no-bun", "-q", "--python", before)
         # Codex 가 그 명령을 신뢰한 상태를 만든다.
         config.write_text(
             f'[hooks.state."{hooks}:user_prompt_submit:1:0"]\n'
             'trusted_hash = "sha256:old-command-hash"\n', encoding="utf-8")
-        out = self.run_installer("verify", "--codex", "-q", "--python",
-                                 "/usr/bin/python3").stdout
+        out = self.run_installer("verify", "--codex", "-q", "--python", before).stdout
         self.assertIn("ok   codex.trust: trusted", out)
 
         # 인터프리터를 바꿔 다시 설치하면 그 신뢰는 무효가 된다.
-        self.run_installer("install", "--codex", "--no-mcp", "--no-bun", "-q",
-                           "--python", sys.executable)
-        out = self.run_installer("verify", "--codex", "-q", "--python", sys.executable,
-                                 expect=1).stdout
+        self.run_installer("install", "--codex", "--no-mcp", "--no-bun", "-q", "--python", after)
+        out = self.run_installer("verify", "--codex", "-q", "--python", after, expect=1).stdout
         self.assertIn("FAIL codex.trust: review-required", out)
 
         # 사용자가 다시 신뢰하면 Codex 가 새 지문을 쓴다 → 다시 trusted.
         config.write_text(
             f'[hooks.state."{hooks}:user_prompt_submit:1:0"]\n'
             'trusted_hash = "sha256:new-command-hash"\n', encoding="utf-8")
-        out = self.run_installer("verify", "--codex", "-q", "--python",
-                                 sys.executable).stdout
+        out = self.run_installer("verify", "--codex", "-q", "--python", after).stdout
         self.assertIn("ok   codex.trust: trusted", out)
 
     def test_uninstall_clears_the_stale_trust_marker(self) -> None:
