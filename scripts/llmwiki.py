@@ -464,21 +464,37 @@ def page_lookup(pages: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 
 def summary_from_blocks(blocks: dict[str, Any], order: list[str]) -> str:
-    """Return a compact searchable lead even when a page starts with a list/quote."""
+    """Return a compact searchable lead even when a page starts with a list/quote.
+
+    A table flattens into `항목 값 --- --- …`, so it is the lead only when the
+    page has no other body block.
+    """
+    tables: list[str] = []
     for bid in order:
         block = blocks[bid]
         if block["kind"] in {"heading", "thematic_break", "code"}:
             continue
-        text = norm(block["data"].get("text") or block["source_text"])
-        text = WIKILINK.sub(lambda match: norm(match.group(3)) or norm(match.group(1)), text)
-        text = re.sub(r"(?m)^\s*(?:[-*+]|\d+\.)\s+", "", text)
-        # `_` 와 `<>` 는 남긴다 — value_token 같은 식별자와 `<your token>` 자리표시가 요약에서 깨지면
-        # 다른 낱말이 되고, 깨진 자리표시는 비밀처럼 읽힌다.
-        text = re.sub(r"[*`#|]", "", text)
-        text = re.sub(r"\s+", " ", text).strip()
+        if block["kind"] == "table":
+            tables.append(bid)
+            continue
+        text = lead_text(block)
+        if text:
+            return text[:280]
+    for bid in tables:
+        text = lead_text(blocks[bid])
         if text:
             return text[:280]
     return ""
+
+
+def lead_text(block: dict[str, Any]) -> str:
+    text = norm(block["data"].get("text") or block["source_text"])
+    text = WIKILINK.sub(lambda match: norm(match.group(3)) or norm(match.group(1)), text)
+    text = re.sub(r"(?m)^\s*(?:[-*+]|\d+\.)\s+", "", text)
+    # `_` 와 `<>` 는 남긴다 — value_token 같은 식별자와 `<your token>` 자리표시가 요약에서 깨지면
+    # 다른 낱말이 되고, 깨진 자리표시는 비밀처럼 읽힌다.
+    text = re.sub(r"[*`#|]", "", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def page_from_markdown(ws: Workspace, path: Path, page_type: str | None = None,
@@ -1562,8 +1578,80 @@ def lint(ws: Workspace) -> tuple[list[str], list[str]]:
         if page.get("type") not in UNLINKED_TYPES and degree[page.get("slug")] == 0:
             warnings.append(f"{page['id']}: orphan (no inbound or outbound links)")
 
+    warnings.extend(compile_warnings(pages, lookup))
     warnings.extend(stale_index(ws))
     return sorted(dict.fromkeys(errors)), sorted(dict.fromkeys(warnings))
+
+
+# --------------------------------------------------------------------------- compile quality
+# 소스를 한 번 통합해 두는 위키라면 보이는 냄새들. 전부 경고다 — 고칠지는 사람이 정한다.
+COMPILED_TYPES = frozenset({"concept", "entity", "synthesis"})
+DEBT_TYPES = frozenset({"concept"})          # 이 type 의 updated 보다 새 source 가 compile debt 다
+PAGE_MAX_BYTES = 200 * 1024
+SUMMARY_HEADER_DUMP = re.compile(r"^(?:항목|구분)\s*\|?\s*(?:값|내용)(?:\s|\||$)")
+TABLE_RULE_DUMP = re.compile(r"(?:^|\s)\|?\s*:?-{3,}:?\s*\|?\s+\|?\s*:?-{3,}:?")
+SUPERSEDE_PHRASE = re.compile(
+    r"(?:을|를)\s*(?:대체|갈음)(?:한다|합니다|했다|하였다|함|하며|하고|하는)|(?i:\b(?:supersedes|replaces|obsoletes)\b)")
+
+
+def summary_is_dump(page: dict[str, Any]) -> bool:
+    """요약이 표 덤프다: `항목 값` 머리로 시작하거나, 표 행·구분선이거나, 표 block 을 이어 붙인 글이다."""
+    summary = norm(page.get("summary"))
+    if not summary:
+        return False
+    if SUMMARY_HEADER_DUMP.match(summary) or summary.startswith("|") or TABLE_RULE_DUMP.search(summary[:120]):
+        return True
+    blocks = page.get("blocks") or {}
+    for bid in page.get("block_order") or []:
+        block = blocks.get(bid) or {}
+        if block.get("kind") != "table":
+            continue
+        flat = summary_from_blocks({bid: block}, [bid])
+        if len(flat) >= 8 and summary.startswith(flat[:40]):
+            return True
+    return False
+
+
+def compile_warnings(pages: list[dict[str, Any]], lookup: dict[str, dict[str, Any]]) -> list[str]:
+    """요약 덤프, 개념에 닿지 않은 source, compile debt, 너무 큰 page, supersedes 없는 대체 문장."""
+    warnings: list[str] = []
+    neighbours: defaultdict[str, set[str]] = defaultdict(set)    # page id → source/page 로 이어진 page id
+    outgoing: defaultdict[str, set[str]] = defaultdict(set)
+    for page in pages:
+        for link in implied_links(page):
+            target = lookup.get(link_key(link["target"]))
+            if target is not None and target["id"] != page["id"]:
+                outgoing[page["id"]].add(target["id"])
+                neighbours[page["id"]].add(target["id"])
+                neighbours[target["id"]].add(page["id"])
+    by_id = {page["id"]: page for page in pages}
+    for page in pages:
+        pid = page["id"]
+        if summary_is_dump(page):
+            warnings.append(f"{pid}: summary starts with a table dump — 한 문장 요약으로 바꾼다")
+        if page.get("type") == "source" and not any(
+                by_id[target].get("type") in COMPILED_TYPES for target in outgoing[pid]):
+            warnings.append(f"{pid}: source links to no concept, entity or synthesis — 아직 통합되지 않았다")
+        if page.get("type") in DEBT_TYPES:
+            newer = sorted(by_id[other]["slug"] for other in neighbours[pid]
+                           if by_id[other].get("type") == "source"
+                           and str(by_id[other].get("updated") or "") > str(page.get("updated") or ""))
+            if newer:
+                warnings.append(f"{pid}: compile debt {len(newer)} — 이 concept 보다 새 source: "
+                                + ", ".join(newer[:5]) + (" …" if len(newer) > 5 else ""))
+        size = len(json.dumps(page, ensure_ascii=False, indent=2).encode("utf-8"))
+        if size > PAGE_MAX_BYTES:
+            warnings.append(f"{pid}: page is {size // 1024} KB (> {PAGE_MAX_BYTES // 1024} KB) — 나눈다")
+        if not any(link["kind"] == "supersedes" for link in implied_links(page)):
+            blocks = page.get("blocks") or {}
+            for bid in page.get("block_order") or []:
+                block = blocks.get(bid) or {}
+                found = SUPERSEDE_PHRASE.search(str(block.get("source_text") or "")) \
+                    if block.get("kind") != "code" else None
+                if found:
+                    warnings.append(f"{pid}:{bid}: 본문이 '{found.group(0)}' 라고 하지만 supersedes 링크가 없다")
+                    break
+    return warnings
 
 
 def stale_index(ws: Workspace) -> list[str]:

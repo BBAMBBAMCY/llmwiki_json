@@ -328,3 +328,71 @@ class ConsistencyTest(WorkspaceCase):
         for fixtures in (False, True):
             for _rel, page in llmwiki.Workspace(REPO, fixtures=fixtures).load_documents():
                 self.assertEqual(self.errors(page), [], page["id"])
+
+
+class CompileQualityTest(WorkspaceCase):
+    """소스를 한 번 통합해 두는 위키의 냄새 — 전부 경고다."""
+
+    def warnings(self, pages: list[dict]) -> list[str]:
+        self.write_pages(pages)
+        llmwiki.build(self.ws)
+        return llmwiki.lint(self.ws)[1]
+
+    def test_a_table_dump_summary_is_flagged(self) -> None:
+        dumped = make_page("spec", "# Spec\n\n| 이름 | 나이 |\n| --- | --- |\n| 홍길동 | 30 |\n\n[[note]]\n",
+                           summary="")
+        table = dumped["block_order"][1]                       # 옛 ingest 가 표를 그대로 요약으로 삼았다
+        dumped["summary"] = llmwiki.summary_from_blocks({table: dumped["blocks"][table]}, [table])
+        header = make_page("header", "# H\n\n[[note]]\n", summary="항목 값 이름 홍길동")
+        clean = make_page("note", "# Note\n\n[[spec]] [[header]]\n", summary="사양을 한 문장으로 말한다.")
+        found = only(self.warnings([dumped, header, clean]), "table dump")
+        self.assertEqual(found, ["page:header: summary starts with a table dump — 한 문장 요약으로 바꾼다",
+                                 "page:spec: summary starts with a table dump — 한 문장 요약으로 바꾼다"])
+
+    def test_the_inferred_summary_skips_a_leading_table(self) -> None:
+        page = make_page("spec", "# Spec\n\n| 항목 | 값 |\n| --- | --- |\n| 이름 | 홍길동 |\n\n사양 설명 문단.\n")
+        self.assertEqual(llmwiki.summary_from_blocks(page["blocks"], page["block_order"]), "사양 설명 문단.")
+        only_table = make_page("table", "# T\n\n| a | b |\n| --- | --- |\n")
+        self.assertEqual(llmwiki.summary_from_blocks(only_table["blocks"], only_table["block_order"]),
+                         "a b --- ---")
+
+    def test_a_source_that_reaches_no_concept_is_flagged(self) -> None:
+        pages = [make_page("raw-a", "# A\n\n[[raw-b]] 만 본다.\n", type="source"),
+                 make_page("raw-b", "# B\n\n[[topic]] 을 정리했다.\n", type="source"),
+                 make_page("topic", "# Topic\n\n개념.\n", type="concept")]
+        self.assertEqual(only(self.warnings(pages), "no concept"),
+                         ["page:raw-a: source links to no concept, entity or synthesis — 아직 통합되지 않았다"])
+
+    def test_compile_debt_counts_newer_sources_on_either_side(self) -> None:
+        concept = make_page("topic", "# Topic\n\n개념.\n", sources=["page:cited"], created="2026-08-01")
+        pages = [concept,
+                 make_page("mentions", "# M\n\n[[topic]] 새 사실.\n", type="source", created="2026-08-10"),
+                 make_page("cited", "# C\n\n[[topic]] 근거.\n", type="source", created="2026-08-05"),
+                 make_page("older", "# O\n\n[[topic]] 옛 사실.\n", type="source", created="2026-07-01")]
+        self.assertEqual(only(self.warnings(pages), "compile debt"),
+                         ["page:topic: compile debt 2 — 이 concept 보다 새 source: cited, mentions"])
+
+    def test_a_page_over_200_kb_is_flagged(self) -> None:
+        big = make_page("big", "# Big\n\n" + "가" * 36_000 + "\n\n[[small]]\n")     # 본문이 source_text·data 두 벌
+        near = make_page("near", "# Near\n\n" + "나" * 33_000 + "\n\n[[small]]\n")
+        small = make_page("small", "# Small\n\n[[big]] [[near]]\n")
+        size = len(json.dumps(big, ensure_ascii=False, indent=2).encode("utf-8"))
+        self.assertGreater(size, 200 * 1024)
+        self.assertEqual(only(self.warnings([big, near, small]), "KB"),
+                         [f"page:big: page is {size // 1024} KB (> 200 KB) — 나눈다"])
+
+    def test_a_replacing_sentence_needs_a_supersedes_link(self) -> None:
+        claims = make_page("policy-v2", "# 정책 2판\n\n이 판은 [[policy-v1]]을 대체한다.\n")
+        declared = make_page("policy-v3", "# 정책 3판\n\n이 판은 [[policy-v2]]를 대체한다.\n")
+        declared["links"].append({"target": "policy-v2", "label": "policy-v2", "kind": "supersedes"})
+        code = make_page("script", "# Script\n\n```py\ns.replaces('a', 'b')  # replaces\n```\n\n[[policy-v1]]\n")
+        old = make_page("policy-v1", "# 정책 1판\n\n[[script]]\n")
+        found = only(self.warnings([claims, declared, code, old]), "supersedes 링크가 없다")
+        self.assertEqual(found, [f"page:policy-v2:{claims['block_order'][1]}: 본문이 '을 대체한다' 라고 하지만 "
+                                 "supersedes 링크가 없다"])
+
+    def test_the_demo_wiki_has_none_of_these(self) -> None:
+        for fixtures in (False, True):
+            ws = llmwiki.Workspace(REPO, fixtures=fixtures)
+            pages = ws.load_pages()
+            self.assertEqual(llmwiki.compile_warnings(pages, llmwiki.page_lookup(pages)), [])

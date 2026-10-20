@@ -90,7 +90,7 @@ python3 scripts/llmwiki.py repair --dry-run                             # 이미
 | `repair` | `validate`가 낸 block 어긋남을 고친다. block마다 source_text와 data의 diff를 보여 주고, 어느 쪽이 새것인지 판정되는 것만 고친다 — source_text와 data가 서로 맞으면 지문·refs·id만 다시 만들고, 둘이 다르면 지문(또는 ingest 때의 `source_snapshot`)과 같은 쪽을 원본으로 보고 그 뒤의 변경이 `updated`·`history`에 적혀 있을 때만 다른 쪽을 새것으로 삼는다. 판정할 수 없는 block은 목록만 내고 exit 1. `--dry-run` `--json` |
 | `build` | 정본 → `index/*.json` + `index/search.sqlite` + `viewer/public/data/**` 결정적 재생성. `--changed <파일…>`(바뀐 파일 힌트 — 그 page 만 색인에 갈아 끼우는 증분, 힌트 밖 변경이 보이면 전량), `--full`, `--heading-paths`(H6, 기본 꺼짐) |
 | `validate` | 스키마·구조 검증 (오류만). block마다 source_text에서 다시 만든 값과 정본이 같은지도 본다 — `fingerprint == block_fingerprint(kind, source_text)`, `data == parse(source_text)`(conflict·current·raw·markdown 제외), refs, id 형식 `block:<slug>:<16hex>:<n>`, 본문 `[[링크]]` 집합 == `links`(kind=wiki) 집합. build는 이 검사로 멈추지 않는다 |
-| `lint` | 오류 + 경고: 미존재 링크, 미판정 상충, 고아, 빈 summary, stale index. `--json` |
+| `lint` | 오류 + 경고: 미존재 링크, 미판정 상충, 고아, 빈 summary, stale index. 통합 품질 경고 — 표 덤프(`항목 값 …`)로 시작하는 summary, concept·entity·synthesis로 가는 링크가 없는 source, compile debt(concept의 updated보다 새 source 수), 200KB를 넘는 page, `~을 대체한다`라고 쓰고 supersedes 링크가 없는 page. `--json` |
 | `query "질의"` | 검색 색인으로 page 순위 (신선한 `index/search.sqlite`, 없거나 낡으면 정본에서 메모리 색인). `--limit` |
 | `get <주소>` | page·block projection. `--block` `--field` `--pointer` |
 | `render <주소>` | `--format md\|html\|json`, `--exact`, `--section <heading block id>` |
