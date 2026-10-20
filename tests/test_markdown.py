@@ -1,6 +1,8 @@
 """Markdown -> block parsing and page construction."""
 from __future__ import annotations
 
+import random
+
 from tests.support import FROZEN_DATE, WorkspaceCase, llmwiki
 
 SAMPLE = """# 제목
@@ -209,3 +211,27 @@ class RelationLinkTest(WorkspaceCase):
         # 위키 밖 근거는 그릴 노드가 없다.
         self.assertNotIn("notes.md", {target for target, _ in links})
         self.assertNotIn("2026-08-19", {target for target, _ in links})
+
+
+class ParsedPagesAreConsistentTest(WorkspaceCase):
+    """파서가 만든 page 는 validate 의 본문 일치 검사를 늘 통과한다 — ingest 가 자기 결과를 거절하지 않는다."""
+
+    def test_an_unclosed_fence_at_the_end_with_blank_lines(self) -> None:
+        path = self.write_raw("notes.md", "# Notes\n\n설명 문단.\n\n```bash\nmake build\n\n")
+        page = llmwiki.page_from_markdown(self.ws, path)
+        self.assertEqual(llmwiki.consistency_errors(page), [])
+        code = page["blocks"][page["block_order"][-1]]
+        self.assertEqual((code["source_text"], code["data"]["text"]), ("```bash\nmake build", "make build"))
+        self.assertEqual(llmwiki.ingest(self.ws, path)["page_id"], "page:notes")
+
+    def test_random_markdown_always_parses_consistently(self) -> None:
+        frags = ["# h", "## h2", "text", "```", "```py", "> q", "> ⚠️ 상충: c", "> ✅ 현행: d", "> ❓ 미결: e",
+                 "owner: x", "- a", "1. b", "| a | b |", "| --- | --- |", "---", "", "  indented", "[[link]]",
+                 "\x0c", " ", "\r", "\t"]
+        rng = random.Random(20261020)
+        for _ in range(3000):
+            body = "\n".join(rng.choice(frags) for _ in range(rng.randint(1, 9))) + rng.choice(["", "\n", "\n\n"])
+            blocks, order = llmwiki.parse_blocks("page:x", body)
+            page = {"id": "page:x", "blocks": blocks, "block_order": order,
+                    "links": llmwiki.page_links("page:x", blocks, order)}
+            self.assertEqual(llmwiki.consistency_errors(page), [], repr(body))

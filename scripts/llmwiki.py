@@ -81,10 +81,11 @@ BLOCK_KEEP = re.compile(r"[^a-zA-Z0-9가-힣._-]+")
 
 CONFLICT_MARK = "⚠️ 상충"
 CURRENT_MARK = "✅ 현행"
-# 아직 답이 없는 질문: `> ❓ 미결: …` 인용에 `owner:`/`due:`(또는 `담당:`/`기한:`) 줄을 둔다.
-OPEN_MARK = "❓"
-OPEN_OWNER = re.compile(r"(?mi)^\s*(?:owner|담당)\s*:\s*(.+?)\s*$")
-OPEN_DUE = re.compile(r"(?mi)^\s*(?:due|기한)\s*:\s*(\d{4}-\d{2}-\d{2})\s*$")
+# 아직 답이 없는 질문: `> ❓ 미결: …` 인용에 `owner:`/`due:`(또는 `담당:`/`기한:`) 줄을 둔다. 표지는 낱말까지다 —
+# `이게 맞나요❓` 같은 인용은 질문이 아니다. owner·due 는 그 줄 안의 값이다(빈 `owner:` 가 다음 줄을 먹지 않는다).
+OPEN_MARK = "❓ 미결"
+OPEN_OWNER = re.compile(r"(?mi)^[ \t]*(?:owner|담당)[ \t]*:[ \t]*(\S.*?)[ \t]*$")
+OPEN_DUE = re.compile(r"(?mi)^[ \t]*(?:due|기한)[ \t]*:[ \t]*(\d{4}-\d{2}-\d{2})[ \t]*$")
 
 # Deterministic radial layout. Project groups occupy adjacent angular sectors,
 # while every sector fills the same disk so the complete graph stays circular.
@@ -432,7 +433,10 @@ def parse_blocks(page_id: str, body: str) -> tuple[dict[str, Any], list[str]]:
                 i += 1
                 if closed:
                     break
-            inner = raw[1:-1] if len(raw) > 1 and raw[-1].startswith("```") else raw[1:]
+            closed = len(raw) > 1 and raw[-1].startswith("```")
+            while not closed and len(raw) > 1 and not raw[-1].strip():
+                raw.pop()       # 닫히지 않은 fence 는 page 끝까지 간다 — 끝의 빈 줄은 내용이 아니고, 남기면 다시 읽을 때 사라진다
+            inner = raw[1:-1] if closed else raw[1:]
             add("code", raw, {"language": language, "text": "\n".join(inner)})
             continue
 

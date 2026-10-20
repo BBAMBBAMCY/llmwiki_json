@@ -420,6 +420,14 @@ class OpenQuestionTest(WorkspaceCase):
         self.assertEqual(llmwiki.consistency_errors(self.page), [])
         self.assertEqual(llmwiki.validate_page(self.page, llmwiki.SchemaValidator.load(self.ws)), [])
 
+    def test_only_the_marker_with_its_word_makes_a_question(self) -> None:
+        page = make_page("q", "# Q\n\n> 고객이 물었다: 이게 맞나요❓\n\n> ❓ 왜 격주 배포인가? 위험을 줄이려고.\n\n"
+                              "> ❓ 미결: 누가 승인하나?\n> owner:\n> due: 2026-09-01\n")
+        kinds = [page["blocks"][b]["kind"] for b in page["block_order"][1:]]
+        self.assertEqual(kinds, ["quote", "quote", "open_question"])
+        data = page["blocks"][page["block_order"][-1]]["data"]
+        self.assertEqual((data["owner"], data["due"]), ("", "2026-09-01"))   # 빈 owner 가 다음 줄을 먹지 않는다
+
     def test_owner_and_due_are_required_fields(self) -> None:
         bid = next(b for b in self.page["block_order"] if self.page["blocks"][b]["kind"] == "open_question")
         data = self.page["blocks"][bid]["data"]
