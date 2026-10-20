@@ -538,12 +538,20 @@ def summary_from_blocks(blocks: dict[str, Any], order: list[str]) -> str:
             continue
         text = lead_text(block)
         if text:
-            return text[:280]
+            return clip_lead(text)
     for bid in tables:
         text = lead_text(blocks[bid])
         if text:
-            return text[:280]
+            return clip_lead(text)
     return ""
+
+
+def clip_lead(text: str, limit: int = 280) -> str:
+    """낱말 가운데서 자르지 않는다 — `<your-password>` 가 `<yo` 로 끊기면 깨진 자리표시가 비밀처럼 읽힌다."""
+    if len(text) <= limit:
+        return text
+    space = text.rfind(" ", 0, limit + 1)
+    return (text[:space] if space > 0 else text[:limit]).rstrip()
 
 
 def lead_text(block: dict[str, Any]) -> str:

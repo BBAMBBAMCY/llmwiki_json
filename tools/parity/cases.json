@@ -239,8 +239,8 @@
       "id": "regex/secret",
       "kind": "regex",
       "input": {
-        "pattern": "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)[\\\"']?\\s*[:=]\\s*[\\\"']?([^\\s,;\\\"']+)",
-        "text": "API_KEY = abc123, \"api_key\": \"x1\" client_secret = 'zzz' value_token: v token=(접속 정보 생략)"
+        "pattern": "(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)\\\"?[ \\t]*[:=][ \\t]*[\\\"']?([^\\s,;\\\"'&]+)",
+        "text": "API_KEY = abc123, \"api_key\": \"x1\" client_secret = 'zzz' value_token: v csrf_token=abc&password=hunter2 token=(접속 정보 생략)\npassword:\n  type: string"
       },
       "expect": "diverge",
       "mitigation": "실제 이름 규칙(llmwiki_text.SECRET). Python inline flag (?i) 를 JS 는 지원하지 않는다. flag 를 패턴 문자열에서 분리해 RegExp 생성자에 넘긴다. value_token 같은 이름·자리표시·이미 가린 값의 면제는 정규식 밖(exempt)에서 하므로 그 함수도 같이 옮긴다."
@@ -286,8 +286,8 @@
       "id": "regex/secret-flag",
       "kind": "regex",
       "input": {
-        "pattern": "(?i)(?<![^\\s\\\"'`(\\[])--?(password|passwd|token|api[_-]?key|secret|auth)\\b\\s+(\\S+)",
-        "text": "--next-token abc --token <TOKEN> `--password hunter2` access-token 을"
+        "pattern": "(?i)(?<![^\\s\\\"'`(\\[])--?(?:[a-z0-9]+[-_])*(password|passwd|token|api[_-]?key|secret|auth)\\b\\s+[\\\"']?([^\\s\\\"'`)\\]]+)",
+        "text": "--next-token abc --token <TOKEN> `--password hunter2` access-token 을 --db-password 'P@ss' az --admin-password Hunter2"
       },
       "expect": "diverge",
       "mitigation": "CLI 플래그 규칙. (?i) 분리. 낱말 안의 `-token` 을 막는 부정 lookbehind 는 JS 도 같은 뜻이다. `--next-token` 처럼 앞에 낱말이 붙은 token 은 식별자 전체로 다시 가른다(credential_name)."
@@ -296,8 +296,8 @@
       "id": "regex/secret-url",
       "kind": "regex",
       "input": {
-        "pattern": "\\b[a-z][a-z0-9+.\\-]*://([^\\s/:@]+:([^\\s/@]+))@",
-        "text": "postgres://admin:<password>@db mysql://u:p4ss@h/x"
+        "pattern": "\\b[a-z][a-z0-9+.\\-]*://([^\\s/:@]*:([^\\s/@]+))@",
+        "text": "postgres://admin:<password>@db mysql://u:p4ss@h/x redis://:pa55@localhost:6379"
       },
       "expect": "match",
       "mitigation": "URL userinfo 규칙. inline flag 가 없고 ASCII 범위라 그대로 옮겨도 된다. 미매치 그룹은 null 로 통일한다."
@@ -346,8 +346,8 @@
       "id": "regex/secret-auth-header",
       "kind": "regex",
       "input": {
-        "pattern": "(?i)\\b(?:proxy-)?authorization\\s*:\\s*(?:bearer|basic)\\s+([A-Za-z0-9._\\-+/=]{8,})",
-        "text": "Authorization: Bearer abcdefghijklmnop\nProxy-Authorization: Basic dXNlcjpwYXNz"
+        "pattern": "(?i)\\b(?:proxy-)?authorization[\\\"']?\\s*[:=]\\s*[\\\"']?(?:bearer|basic)\\s+([A-Za-z0-9._\\-+/=]{8,})",
+        "text": "Authorization: Bearer abcdefghijklmnop\n\"Authorization\": \"Basic dXNlcjpwYXNz\"\nProxy-Authorization: Basic abcdefghij"
       },
       "expect": "diverge",
       "mitigation": "Authorization 헤더 규칙. (?i) 분리. 헤더 안이면 값의 모양과 상관없이 자격증명이다."
@@ -366,8 +366,8 @@
       "id": "regex/secret-prefix",
       "kind": "regex",
       "input": {
-        "pattern": "\\b(sk-[A-Za-z0-9_\\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9\\-]{10,}|AIza[A-Za-z0-9_\\-]{20,})",
-        "text": "sk-abcdefghijklmnopqrstuvwxyz0123 ghp_abcdefghijklmnop1234 xoxb-1234567890-abc"
+        "pattern": "\\b(sk-(?=[A-Za-z0-9_\\-]*[0-9A-Z])[A-Za-z0-9_\\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9\\-]{10,}|AIza[A-Za-z0-9_\\-]{20,})",
+        "text": "sk-abcdefghijklmnopqrstuvwxyz0123 sk-learn-tutorials-overview-page ghp_abcdefghijklmnop1234 xoxb-1234567890-abc"
       },
       "expect": "match",
       "mitigation": "알려진 토큰 접두 규칙. ASCII 범위의 명시적 집합이라 그대로 옮겨도 된다."

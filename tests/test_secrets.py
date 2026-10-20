@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import random
 
 from tests.support import WorkspaceCase, llmwiki, llmwiki_context as ctx, make_page
 
@@ -143,13 +144,13 @@ class PlaceholderTest(WorkspaceCase):
                    "Authorization: Bearer <token>",
                    '{"value_token": "eyJ0eXAi", "next_token": "abc", "max_token": 4096}',
                    "page_token: abc123", "csrf_token=abc", "--next-token abc",
-                   "token: value_token", "password: DB_PASSWORD", "secret: secret_name",
+                   "token: value_token", "password: DB_PASSWORD", "secret: DB_SECRET", "api_key: settings.API_KEY",
                    # 산문 — 낱말 안의 `-token`·`-api-key` 는 CLI 플래그가 아니고, basic·bearer 뒤의 영단어는 토큰이 아니다
                    "access-token 을 발급한다", "x-api-key 헤더를 붙인다", "pre-auth 단계에서 막는다",
                    "basic authentication is used", "Basic examples follow", "Bearer instruments")
     SECRETS = {"password: hunter2": "password", "db_password=hunter2": "db_password",
                "GITHUB_TOKEN=ghx_live_123": "GITHUB_TOKEN", "refresh_token: abc": "refresh_token",
-               "refreshToken: abc": "refreshToken", "id_token: x": "id_token", "token: abc123": "token",
+               "refreshToken: abc": "refreshToken", "id_token: eyJraWQ": "id_token", "token: abc123": "token",
                '{"password": "hunter2"}': "password", "client_secret = 'zzz'": "client_secret",
                "password: <x>hunter2": "password", "postgres://admin:pa55@db/app": "credential",
                "run (--token abc)": "token", "Basic dXNlcjpwYXNz": "credential",
@@ -226,3 +227,75 @@ class CredentialWordSlugTest(WorkspaceCase):
 
     def test_a_real_value_after_the_same_word_is_still_caught(self) -> None:
         self.assertEqual(llmwiki.T.secret_hit("access-token: 5828861393e20db8"), "access-token")
+
+
+class ReviewedRulesTest(WorkspaceCase):
+    """검토에서 나온 모양들 — 옛 규칙이 잡던 것은 계속 잡고, 산문·코드·자리표시는 build 를 막지 않는다."""
+
+    CAUGHT = {
+        "--db-password hunter2": "db-password", "--admin-password 'P@ssw0rd!'": "admin-password",
+        "az vm create --admin-password Hunter2Hunter2": "admin-password", "--auth-token abc123xyz": "auth-token",
+        "--client-secret zzz9": "client-secret",
+        "csrf_token=abc&username=bob&password=hunter2": "password",
+        "https://x/cb?page_token=abc&access_token=ya29.a0AfH6SMBx": "access_token",
+        "api_key: key-3ax6xnjp29jd6fds4gc373sgvjxteol0": "api_key",
+        "NOTION_TOKEN=secret_9fJ2kLmNoPqRsTuVwXyZ0123456789": "NOTION_TOKEN",
+        "password: Super-Secret-123": "password", "password: Password_2024": "password",
+        "password: my.secret.pw": "password", "root_token: hvs.CAESIJlU9JMYEhOPYv4": "root_token",
+        "telegram_token: 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw": "telegram_token",
+        "sas_token=sv=2021-06-08&ss=b&sig=abc%2B": "sas_token", '"SecurityToken": "FQoGZXIvYXdz"': "SecurityToken",
+        '"Authorization": "Bearer abcdefghijklmnopqr"': "credential", "password: (접속 정보 생략)hunter2": "password",
+        "page_token: password=hunter2": "password", "password: password: hunter2": "password",
+        "redis://:pa55@localhost:6379": "credential"}
+    HARMLESS = (
+        "requests.post(url, data={'username': user, 'password': pw})", "'token': 발급된 값을 헤더에 넣는다.",
+        "password:\n  type: string", "interface User { password: string; }", "token: String!",
+        "token = get_token()", "password = getpass.getpass()", "token: ${{ secrets.GITHUB_TOKEN }}",
+        "password: {{ password }}", "password=$DB_PASSWORD", "password: %PASSWORD%", "secret: true",
+        "password: null", "api_key: None", "password: required", "token: ...", "password: *****", "api_key: XXXXXXXX",
+        "password: 사용자 비밀번호", "password: 8자 이상", "Password: 필수", "token: 토큰", "context window (token: 128k)",
+        "`block:access-token:5828861393e20db8:1`", "block:password:5828861393e20db8:1의 내용",
+        "(block:password:5828861393e20db8:1)", "[[access-token#block:access-token:5828861393e20db8:1]]",
+        "basic read/write access", "Basic JavaScript knowledge", "a basic 2-column layout", "basic HTML/CSS 지식",
+        "sk-learn-tutorials-overview-page", "--auth oauth", "`password`: 사용자 비밀번호")
+
+    def test_old_catches_stay_caught(self) -> None:
+        for text, label in self.CAUGHT.items():
+            self.assertEqual(llmwiki.T.secret_hit(text), label, text)
+            masked = llmwiki.redact(text)
+            self.assertIn(llmwiki.T.MASK, masked, text)
+            self.assertIsNone(llmwiki.T.secret_hit(masked), text)
+
+    def test_prose_code_and_markers_are_harmless(self) -> None:
+        for text in self.HARMLESS:
+            self.assertIsNone(llmwiki.T.secret_hit(text), text)
+            self.assertEqual(llmwiki.redact(text), text, text)
+
+    def test_generated_summaries_do_not_invent_secrets(self) -> None:
+        bodies = {"login.md": "# 로그인 API\n\n- `username`: 사용자 ID\n- `password`: 사용자 비밀번호\n",
+                  "token.md": "# 토큰\n\n**Token**: 로그인하면 발급된다.\n",
+                  "long.md": "# 설정\n\n" + "가" * 266 + " password: <your-password> 를 넣는다.\n"}
+        for name, body in bodies.items():
+            self.assertIsNone(llmwiki.T.secret_hit(body), name)
+            page = json.loads((self.root / llmwiki.ingest(self.ws, self.write_raw(name, body))["dest"])
+                              .read_text(encoding="utf-8"))
+            self.assertIsNone(llmwiki.T.secret_hit(page["summary"]), name)
+
+    def test_credential_keys_with_numbers_and_lists(self) -> None:
+        value = {"password": 12345678, "api_key": ["sk_live_abcdef123456", "<KEY>"], "count": 3, "token": 7}
+        self.assertEqual(llmwiki.T.secret_paths(value), [("/password", "password"), ("/api_key/0", "api_key")])
+        self.assertEqual(llmwiki.T.redact_value(value), {"password": llmwiki.T.MASK,
+                                                         "api_key": [llmwiki.T.MASK, "<KEY>"], "count": 3, "token": 7})
+
+    def test_redact_is_idempotent_on_glued_and_nested_shapes(self) -> None:
+        frags = ["password", "token", "api_key", "secret", "client_secret", "Authorization", "Bearer", ":", "=",
+                 " ", '"', "'", "`", "<x>", "(", ")", "[", "-", "--", "_", "&", "://", "@", "hunter2", "ABCdef123",
+                 "ghp_abcdefghijklmnopqrstu", "xoxb-abcdefghijkl", "AIzaabcdefghijklmnopqrstuv",
+                 "-----BEGIN PRIVATE KEY-----", "-----END PRIVATE KEY-----", llmwiki.T.MASK, "(접속", "value_token",
+                 "next_", "DB_PASSWORD", "0123456789abcdef:1", "block:", "가나다", "*"]
+        rng = random.Random(20261020)
+        for _ in range(5000):
+            text = "".join(rng.choice(frags) for _ in range(rng.randint(1, 10)))
+            once = llmwiki.redact(text)
+            self.assertEqual(llmwiki.redact(once), once, text)
+            self.assertIsNone(llmwiki.T.secret_hit(once), text)
