@@ -167,6 +167,7 @@ link_key = T.link_key
 refs_in = T.refs_in
 implied_links = T.implied_links
 redact = T.redact
+redact_value = T.redact_value
 block_text = T.block_text
 unresolved = T.unresolved
 

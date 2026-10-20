@@ -472,7 +472,9 @@ def summary_from_blocks(blocks: dict[str, Any], order: list[str]) -> str:
         text = norm(block["data"].get("text") or block["source_text"])
         text = WIKILINK.sub(lambda match: norm(match.group(3)) or norm(match.group(1)), text)
         text = re.sub(r"(?m)^\s*(?:[-*+]|\d+\.)\s+", "", text)
-        text = re.sub(r"[*_`>#|]", "", text)
+        # `_` 와 `<>` 는 남긴다 — value_token 같은 식별자와 `<your token>` 자리표시가 요약에서 깨지면
+        # 다른 낱말이 되고, 깨진 자리표시는 비밀처럼 읽힌다.
+        text = re.sub(r"[*`#|]", "", text)
         text = re.sub(r"\s+", " ", text).strip()
         if text:
             return text[:280]

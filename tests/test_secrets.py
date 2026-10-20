@@ -132,3 +132,65 @@ class RedactIdempotencyTest(WorkspaceCase):
         text, _result, _pages = ctx.build_context(self.root, "키 메모 회전 금요일")
         self.assertIn("api_key: (접속 정보 생략) 키 회전", text)
         self.assertNotIn("정보 생략) 정보 생략)", text)
+
+
+class PlaceholderTest(WorkspaceCase):
+    """`<…>` 자리표시와 JSON key 이름은 비밀이 아니다 — 진짜 값은 여전히 걸린다."""
+
+    NOT_SECRETS = ("password: <your password>", '"api_key": "<API_KEY>"', "token=<TOKEN>",
+                   "--token <TOKEN>", "postgres://admin:<password>@db.local/app",
+                   "-----BEGIN PRIVATE KEY-----\n<key>\n-----END PRIVATE KEY-----",
+                   "Authorization: Bearer <token>",
+                   '{"value_token": "eyJ0eXAi", "next_token": "abc", "max_token": 4096}',
+                   "page_token: abc123", "csrf_token=abc", "--next-token abc",
+                   "token: value_token", "password: DB_PASSWORD", "secret: secret_name")
+    SECRETS = {"password: hunter2": "password", "db_password=hunter2": "db_password",
+               "GITHUB_TOKEN=ghx_live_123": "GITHUB_TOKEN", "refresh_token: abc": "refresh_token",
+               "refreshToken: abc": "refreshToken", "id_token: x": "id_token", "token: abc123": "token",
+               '{"password": "hunter2"}': "password", "client_secret = 'zzz'": "client_secret",
+               "password: <x>hunter2": "password", "postgres://admin:pa55@db/app": "credential",
+               "-----BEGIN PRIVATE KEY-----\n<key>\nMIIE\n-----END PRIVATE KEY-----": "credential"}
+
+    def test_placeholders_and_key_names_are_not_secrets(self) -> None:
+        for text in self.NOT_SECRETS:
+            self.assertIsNone(llmwiki.T.secret_hit(text), text)
+            self.assertEqual(llmwiki.redact(text), text, text)
+
+    def test_real_values_are_still_caught(self) -> None:
+        for text, label in self.SECRETS.items():
+            self.assertEqual(llmwiki.T.secret_hit(text), label, text)
+            self.assertIn(llmwiki.T.MASK, llmwiki.redact(text), text)
+
+    def test_a_page_of_placeholders_ingests_validates_and_builds(self) -> None:
+        body = "# 설정 예시\n\n" + "\n\n".join(f"`{line}`" if "\n" not in line else f"```\n{line}\n```"
+                                              for line in self.NOT_SECRETS) + "\n"
+        result = llmwiki.ingest(self.ws, self.write_raw("config.md", body))
+        page = json.loads((self.root / result["dest"]).read_text(encoding="utf-8"))
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+        self.assertEqual(len(page["blocks"]), len(self.NOT_SECRETS) + 1)
+
+    def test_object_keys_name_fields_while_their_values_are_judged(self) -> None:
+        page = make_page("alpha", "# Alpha\n\n본문.\n")
+        page["blocks"][page["block_order"][1]]["data"].update(
+            {"value_token": "eyJ0eXAi", "password": "hunter2", "api_key": "<API_KEY>"})
+        where = [path for path, _label in llmwiki.T.secret_paths(page)]
+        self.assertEqual(where, [f"/blocks/{page['block_order'][1]}/data/password"])
+
+    def test_json_views_keep_their_shape_and_still_mask(self) -> None:
+        page = make_page("alpha", '# Alpha\n\n설정은 password=abc" 로 끝난다.\n')
+        page["blocks"][page["block_order"][1]]["data"]["password"] = "hunter2"
+        view = llmwiki.T.redact_value(page)
+        block = view["blocks"][page["block_order"][1]]
+        self.assertEqual(block["data"]["password"], llmwiki.T.MASK)
+        self.assertEqual(block["source_text"], '설정은 password=(접속 정보 생략)" 로 끝난다.')
+        self.assertEqual(set(view), set(page))                 # key 는 손대지 않는다
+        self.write_pages([page])
+        out = ctx.get_page(self.root, "alpha", mode="page")     # 직렬화한 JSON 을 가리던 때는 여기서 깨졌다
+        self.assertNotIn("hunter2", json.dumps(out, ensure_ascii=False))
+        self.assertNotIn("abc\"", json.dumps(out, ensure_ascii=False))
+
+    def test_the_inferred_summary_keeps_placeholders_and_identifiers(self) -> None:
+        path = self.write_raw("note.md", "# 설정\n\n`token=<TOKEN>` 은 value_token 필드에 들어간다.\n")
+        summary = llmwiki.page_from_markdown(self.ws, path)["summary"]
+        self.assertEqual(summary, "token=<TOKEN> 은 value_token 필드에 들어간다.")
+        self.assertIsNone(llmwiki.T.secret_hit(summary))

@@ -20,25 +20,45 @@ LINK_SEPARATOR = re.compile(r"[\s_]+")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 MASK = "(접속 정보 생략)"
-# Every pattern's last group is the credential itself; redact replaces only
-# that span, so the name, separator and quotes around it keep their shape.
 # Named credentials: `password: x`, `"api_key": "x"`, `--token=x`.
 SECRET = re.compile(
     r"(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|"
     r"secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)"
-    r"\"?\s*[:=]\s*\"?([^\s,;\"']+)")
+    r"[\"']?\s*[:=]\s*[\"']?([^\s,;\"']+)")
 SECRET_MASK = MASK
-# Values that are credentials even without a name — auth headers, PEM, known
-# token prefixes, URL userinfo, CLI flags.
-SECRET_EXTRA = (
-    re.compile(r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})"),
-    re.compile(r"(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----)"),
-    re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|"
-               r"xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[A-Za-z0-9_\-]{20,})"),
-    re.compile(r"\b[a-z][a-z0-9+.\-]*://([^\s/:@]+:[^\s/@]+)@"),
-    re.compile(r"(?i)--?(?:password|passwd|token|api[_-]?key|secret|auth)\b\s+(\S+)"),
+# (pattern, name group, value group, secret group). redact replaces the value
+# group, so the name, separator and quotes around it keep their shape; the
+# secret group is the part a placeholder or an earlier mask has to cover. A
+# name group means the match is a `name: value` pair, judged by its name too.
+SECRET_RULES = (
+    (SECRET, 1, 2, 2),
+    # Values that are credentials even without a name — auth headers, PEM,
+    # known token prefixes, URL userinfo, CLI flags.
+    (re.compile(r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})"), 0, 1, 1),
+    (re.compile(r"(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----(.*?)-----END [A-Z ]*PRIVATE KEY-----)"), 0, 1, 2),
+    (re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|"
+                r"xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[A-Za-z0-9_\-]{20,})"), 0, 1, 1),
+    (re.compile(r"\b[a-z][a-z0-9+.\-]*://([^\s/:@]+:([^\s/@]+))@"), 0, 1, 2),
+    (re.compile(r"(?i)--?(password|passwd|token|api[_-]?key|secret|auth)\b\s+(\S+)"), 1, 2, 2),
 )
-SECRET_PATTERNS = (SECRET, *SECRET_EXTRA)
+SECRET_EXTRA = tuple(rule[0] for rule in SECRET_RULES[1:])
+# `<your token>` 은 자리표시다. 값 자리에서 시작해 값을 덮어야 한다 — 뒤에 붙은 닫는 문장부호(`` ` ``·괄호·마침표)만 남아도 된다.
+PLACEHOLDER = re.compile(r"<[^<>\n]{1,200}>")
+PLACEHOLDER_TAIL = re.compile(r"[`)\]}>.,!?:;'\"*_~]*")
+# password·secret·api_key 는 무엇이 앞에 붙어도 자격증명 이름이다(db_password, JWT_SECRET). token 만
+# 다르다 — value_token·next_token·max_token 은 자격증명이 아니다. 앞 낱말이 이 중 하나일 때만 그렇다.
+TOKEN_QUALIFIERS = frozenset({
+    "access", "admin", "api", "app", "auth", "bearer", "bot", "ci", "client", "deploy", "gh", "github",
+    "gitlab", "hf", "id", "job", "jwt", "npm", "oauth", "personal", "private", "pypi", "refresh", "secret",
+    "service", "session", "slack", "user", "vault"})
+# 값이 이런 낱말을 품은 식별자면(`token: value_token`, `password: DB_PASSWORD`) 비밀이 아니라 key 의 이름이다.
+CREDENTIAL_WORDS = frozenset({"apikey", "credential", "credentials", "key", "passwd", "password", "secret",
+                              "token"})
+CREDENTIAL_KEY = re.compile(r"(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|"
+                            r"connection[_-]?string|private[_-]?key|client[_-]?secret|token)$")
+IDENTIFIER_CHAR = re.compile(r"[A-Za-z0-9_.\-]")
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]*")
+SEGMENT_BREAK = re.compile(r"[_.\-\s]+|(?<=[a-z0-9])(?=[A-Z])")
 
 
 def norm(value: Any) -> str:
@@ -132,20 +152,75 @@ def implied_links(page: dict[str, Any]) -> list[dict[str, Any]]:
     return links
 
 
-def _value_start(match: re.Match[str]) -> int:
-    return match.start(match.re.groups)
+def segments(name: str) -> list[str]:
+    """`nextPageToken`, `NEXT_PAGE_TOKEN`, `next-page.token` -> ['next', 'page', 'token']."""
+    return [part.lower() for part in SEGMENT_BREAK.split(name) if part]
 
 
-def exempt(match: re.Match[str]) -> bool:
-    """A value that is already the mask is not a credential — redact twice, get the same text."""
-    return match.string.startswith(MASK, _value_start(match))
+def credential_name(identifier: str, word: str) -> bool:
+    """Does `identifier`, which ends in the credential word `word`, name a credential?
+
+    A bare `token`, an env-style `GITHUB_TOKEN` and `refresh_token` do; a JSON
+    key like `value_token` or `next_token` does not. Every other word
+    (password, secret, api_key, …) names a credential whatever precedes it.
+    """
+    if word.lower() != "token":
+        return True
+    name = identifier.strip("-\"'")
+    if name.lower() == "token" or name.isupper():
+        return True
+    head = segments(name[:len(name) - len(word)])
+    return bool(head) and head[-1] in TOKEN_QUALIFIERS
 
 
-def _mask(match: re.Match[str]) -> str:
-    if exempt(match):
-        return match.group(0)
-    start, end = _value_start(match) - match.start(), match.end(match.re.groups) - match.start()
-    return match.group(0)[:start] + MASK + match.group(0)[end:]
+def credential_key(key: str) -> bool:
+    """A JSON object key whose string value is a credential: `password`, `client_secret`."""
+    match = CREDENTIAL_KEY.search(str(key))
+    return bool(match) and credential_name(str(key), match.group(1))
+
+
+def key_reference(value: str) -> bool:
+    """`token: value_token`, `password: DB_PASSWORD` — the value names a field or a variable."""
+    value = value.rstrip("`)]}>.,!?:;'\"*~")       # `token: value_token` 의 닫는 backtick 은 이름이 아니다
+    return bool(IDENTIFIER.fullmatch(value)) and any(part in CREDENTIAL_WORDS for part in segments(value))
+
+
+def placeholder_covers(text: str, start: int, end: int) -> bool:
+    """`<…>` begins the value at `start` and runs at least to its end."""
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    found = PLACEHOLDER.match(text, start)
+    return bool(found) and (found.end() >= end or PLACEHOLDER_TAIL.fullmatch(text, found.end(), end) is not None)
+
+
+def plain_value(text: str) -> bool:
+    """A string that would hold a real credential — not empty, not masked, no placeholder, no field name."""
+    value = text.strip()
+    return bool(value) and not value.startswith(MASK) and not placeholder_covers(value, 0, len(value)) \
+        and not key_reference(value)
+
+
+def identifier_at(text: str, end: int, start: int) -> str:
+    """The whole identifier that ends at `end` (its credential word starts at `start`)."""
+    while start > 0 and IDENTIFIER_CHAR.match(text[start - 1]):
+        start -= 1
+    return text[start:end]
+
+
+def exempt(match: re.Match[str], name: int, value: int, secret: int) -> bool:
+    """Not a credential after all: already masked (redact stays idempotent), a `<…>`
+    placeholder, a value that names a field, or a name like `value_token`."""
+    text = match.string
+    if text.startswith(MASK, match.start(secret)):
+        return True
+    if placeholder_covers(text, match.start(secret), match.end(secret)):
+        return True
+    if not name:
+        return False
+    return key_reference(match.group(value)) or not credential_name(
+        identifier_at(text, match.end(name), match.start(name)), match.group(name))
 
 
 def redact(text: str) -> str:
@@ -155,24 +230,45 @@ def redact(text: str) -> str:
     the hook can each apply it without `(접속 정보 생략) 정보 생략)` piling up.
     """
     text = CONTROL.sub("", str(text or ""))
-    for pattern in SECRET_PATTERNS:
-        text = pattern.sub(_mask, text)
+    for pattern, name, value, secret in SECRET_RULES:
+        def mask(match: re.Match[str]) -> str:
+            if exempt(match, name, value, secret):
+                return match.group(0)
+            start, end = match.start(value) - match.start(), match.end(value) - match.start()
+            return match.group(0)[:start] + MASK + match.group(0)[end:]
+        text = pattern.sub(mask, text)
     return text
+
+
+def redact_value(value: Any) -> Any:
+    """`redact` for a JSON value: strings are masked one by one and object keys are left
+    alone, while a string under a credential key (`"password": "x"`) is masked whole.
+
+    Masking the serialised JSON instead could eat the backslash of an escaped
+    quote and leave text that no longer parses.
+    """
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, list):
+        return [redact_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: MASK if isinstance(item, str) and credential_key(key) and plain_value(item)
+                else redact_value(item) for key, item in value.items()}
+    return value
 
 
 def secret_hit(text: str) -> str | None:
     """Short label if `text` looks like it holds a credential, else None.
 
-    The label is the field name (`password`, `api_key`) or `credential` — never
-    the secret value itself. Masked values do not count.
+    The label is the field name (`password`, `db_password`) or `credential` —
+    never the secret value itself. Masked values and placeholders do not count.
     """
     text = CONTROL.sub("", str(text or ""))
-    for match in SECRET.finditer(text):
-        if not exempt(match):
-            return match.group(1)
-    for pattern in SECRET_EXTRA:
-        if any(not exempt(match) for match in pattern.finditer(text)):
-            return "credential"
+    for pattern, name, value, secret in SECRET_RULES:
+        for match in pattern.finditer(text):
+            if not exempt(match, name, value, secret):
+                return identifier_at(text, match.end(name), match.start(name)).strip("-\"'") if name \
+                    else "credential"
     return None
 
 
@@ -193,7 +289,11 @@ def secret_paths(value: Any, path: str = "") -> list[tuple[str, str]]:
             hits.append((path or "/", label))
     elif isinstance(value, dict):
         for key, item in value.items():
-            hits.extend(secret_paths(item, f"{path}/{pointer_token(key)}"))
+            where = f"{path}/{pointer_token(key)}"
+            # JSON key 는 이름만이지 값이 아니다 — `"value_token": "…"` 는 안 되고 `"password": "…"` 는 된다.
+            if isinstance(item, str) and credential_key(key) and plain_value(item):
+                hits.append((where, str(key)))
+            hits.extend(secret_paths(item, where))
     elif isinstance(value, list):
         for index, item in enumerate(value):
             hits.extend(secret_paths(item, f"{path}/{index}"))

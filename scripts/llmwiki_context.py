@@ -175,6 +175,7 @@ def env_flag(name: str, fallback: bool) -> bool:
 
 
 redact = IDX.redact
+redact_value = IDX.redact_value
 
 
 def est_tokens(text: str) -> int:
@@ -1002,7 +1003,7 @@ def resolve_blocks(page: dict[str, Any],
 
 def block_view(block: dict[str, Any]) -> dict[str, Any]:
     """block object 하나. 정본 그대로이되 비밀만 지운다."""
-    view = json.loads(redact(json.dumps(block, ensure_ascii=False)))
+    view = redact_value(block)
     view["conflict"] = flagged(block)
     return view
 
@@ -1016,8 +1017,7 @@ def page_meta(page: dict[str, Any], fields: Iterable[str] | None = None) -> dict
         value = page[key]
         if key in {"links", "history"} and not fields:
             continue  # 명시적으로 부르지 않으면 싣지 않는다.
-        out[key] = json.loads(redact(json.dumps(value, ensure_ascii=False))) \
-            if isinstance(value, (dict, list)) else redact(norm(value))
+        out[key] = redact_value(value) if isinstance(value, (dict, list)) else redact(norm(value))
     return out
 
 
@@ -1060,7 +1060,7 @@ def get_page(root: Path, selector: str, *, mode: str = "outline",
     if wanted and mode == "outline":
         mode = "blocks"  # block 을 지목했으면 그 block 을 달라는 뜻이다.
     if mode == "page":
-        return json.loads(redact(json.dumps(doc.page, ensure_ascii=False)))
+        return redact_value(doc.page)
     if mode == "blocks":
         if not wanted:
             return {"error": "mode=blocks 에는 blocks 가 필요하다",
