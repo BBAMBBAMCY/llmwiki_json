@@ -12,7 +12,7 @@
   `fallback`). 색인 경로에서도 hit page 의 정본 sha 를 대조해 바뀐 page 는 정본을 다시 읽는다.
 - 주입 형식은 P/B/E 부분 그래프(`llmwiki_index.render_graph`). block 본문은 앞 320자가 아니라
   질문과 겹치는 행을 고르고, 낡은 page(supersedes 로 대체됨) 는 `sup→head` 한 줄만 싣는다.
-- 무주입 문턱은 **기본 꺼짐**. `LLMWIKI_CONTEXT_SILENCE` 로 켠다 (아래).
+- 무주입 문턱은 **기본 꺼짐**. 위키 설정(`tools/config/context.json` 의 `silence`)이나 `LLMWIKI_CONTEXT_SILENCE` 로 켠다 (아래).
 - `llmwiki_get` 은 색인을 주소 힌트로만 쓰고 최종 object 는 정본 파일 하나에서 읽는다.
 - 어떤 오류가 나도 질문을 막지 않는다(fail-open: stdout 비우고 exit 0). 워치독 6초.
 - 자격증명으로 보이는 문자열은 색인에도 출력에도 남기지 않는다.
@@ -25,7 +25,7 @@ LLMWIKI_CONTEXT_DISABLE     1 이면 hook 이 아무것도 하지 않는다
 LLMWIKI_CONTEXT_MAX_BYTES   주입 본문 UTF-8 바이트 상한 (기본 6000)
 LLMWIKI_CONTEXT_MAX_TOKENS  주입 본문 추정 토큰 상한 (기본 2000)
 LLMWIKI_CONTEXT_INDEX       0 이면 색인을 쓰지 않고 정본 스캔만 한다 (기본 1)
-LLMWIKI_CONTEXT_SILENCE     무주입 문턱 T (기본 0 = 끔). raw_top × coverage < T 면 무주입.
+LLMWIKI_CONTEXT_SILENCE     무주입 문턱 T (기본 context.json 의 silence, 없으면 0 = 끔). raw_top × coverage < T 면 무주입.
                             동결 자연 세트 보정값은 770 이지만 위키마다 다시 재야 한다.
 LLMWIKI_CONTEXT_HINT        주소만(weak) 문턱 (기본 0 = 끔). HINT ≤ 신호 < SILENCE 면 주소만
 LLMWIKI_CONTEXT_TIMEOUT     hook 전체 워치독 초 (기본 6)
@@ -165,6 +165,28 @@ def env_float(name: str, fallback: float) -> float:
         return max(0.0, float(os.environ[name]))
     except (KeyError, ValueError):
         return fallback
+
+
+def config_float(root: Path, key: str) -> float | None:
+    """`tools/config/context.json` 의 숫자 설정 하나. 없거나 숫자가 아니면 None."""
+    try:
+        value = json.loads((Path(root) / ALWAYS_CONFIG).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    item = value.get(key) if isinstance(value, dict) else None
+    return max(0.0, float(item)) if isinstance(item, (int, float)) and not isinstance(item, bool) else None
+
+
+def threshold(root: Path, env: str, key: str, fallback: float) -> float:
+    """무주입·주소만 문턱: 환경변수 → 위키 설정(`context.json` 의 `silence`·`hint`) → 기본(0 = 끔).
+
+    맞는 값은 위키의 크기와 글에 따라 다르다 — 자기 질문 세트로 `llmwiki_eval.py --silence` 를 돌려
+    gold 주입을 잃지 않는 값을 그 위키의 설정에 둔다.
+    """
+    if os.environ.get(env, "").strip():
+        return env_float(env, fallback)
+    found = config_float(root, key)
+    return fallback if found is None else found
 
 
 def env_flag(name: str, fallback: bool) -> bool:
@@ -745,8 +767,10 @@ def build_context(root: Path, query: str, **options: Any) -> tuple[str, Result, 
     use_always = options.pop("use_always", True)
     use_index = options.pop("use_index", env_flag(ENV_INDEX, True))
     use_memory = options.pop("use_memory", env_flag(ENV_MEMORY, True))
-    silence_t = options.pop("silence_t", env_float(ENV_SILENCE, SILENCE_T_DEFAULT))
-    hint_t = options.pop("hint_t", env_float(ENV_HINT, HINT_T_DEFAULT))
+    silence_t = options.pop("silence_t", None)
+    hint_t = options.pop("hint_t", None)
+    silence_t = threshold(root, ENV_SILENCE, "silence", SILENCE_T_DEFAULT) if silence_t is None else silence_t
+    hint_t = threshold(root, ENV_HINT, "hint", HINT_T_DEFAULT) if hint_t is None else hint_t
     cut = options.pop("cut", GRAPH_CUT)
     # 고정 몫에는 자체 상한이 있고(전체의 절반 이내), 그 뒤 render 가 머리말까지
     # 포함해 전체 예산을 다시 검사한다. 여기서 또 빼면 검색 몫이 두 번 줄어든다.
@@ -1909,10 +1933,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--scan", action="store_true", default=not env_flag(ENV_MEMORY, True),
                        help="디스크 색인도 메모리 색인도 쓰지 않고 최후 스캔 경로로 간다 "
                             "(기본: $LLMWIKI_CONTEXT_MEMORY)")
-        p.add_argument("--silence", type=float, default=env_float(ENV_SILENCE, SILENCE_T_DEFAULT),
-                       help="무주입 문턱 raw_top×coverage (0=끔, 기본 $LLMWIKI_CONTEXT_SILENCE)")
-        p.add_argument("--hint", type=float, default=env_float(ENV_HINT, HINT_T_DEFAULT),
-                       help="주소만 문턱 (0=끔, 기본 $LLMWIKI_CONTEXT_HINT)")
+        p.add_argument("--silence", type=float, default=None,
+                       help="무주입 문턱 raw_top×coverage (0=끔, 기본 $LLMWIKI_CONTEXT_SILENCE → "
+                            "tools/config/context.json 의 silence → 0)")
+        p.add_argument("--hint", type=float, default=None,
+                       help="주소만 문턱 (0=끔, 기본 $LLMWIKI_CONTEXT_HINT → context.json 의 hint → 0)")
         p.add_argument("--json", action="store_true", dest="as_json")
 
     hook = sub.add_parser("hook", help="UserPromptSubmit hook (stdin/stdout JSON)")
@@ -2054,7 +2079,8 @@ def run(argv: list[str] | None = None) -> int:
             "index_present": sorted(p.name for p in (root / "index").glob("*.json")),
             "search_index": search_info,
             "index_enabled": env_flag(ENV_INDEX, True),
-            "silence_threshold": env_float(ENV_SILENCE, SILENCE_T_DEFAULT),
+            "silence_threshold": threshold(root, ENV_SILENCE, "silence", SILENCE_T_DEFAULT),
+            "hint_threshold": threshold(root, ENV_HINT, "hint", HINT_T_DEFAULT),
             "max_bytes": env_int(ENV_MAX_BYTES, MAX_BYTES),
             "max_tokens": env_int(ENV_MAX_TOKENS, MAX_TOKENS),
             "disabled": env_flag(ENV_DISABLE, False),

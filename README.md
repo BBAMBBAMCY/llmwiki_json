@@ -149,7 +149,7 @@ block id는 `block:<slug>:<내용 지문>:<중복 순번>` 형태라, 페이지 
 
 ## 자동 컨텍스트 주입
 
-`scripts/llmwiki_context.py`는 Codex와 Claude Code의 `UserPromptSubmit` hook으로 붙어, 질문마다 근거를 찾아 `<llmwiki-context v=3>` 블록(P/B/E 부분 그래프)으로 주입합니다. 검색은 `build`가 정본에서 굽는 `index/search.sqlite`로 하고, 색인이 없거나 낡으면 정본 `wiki/**/*.json`에서 메모리 색인을 만들어 같은 형식으로 주입하며, 그 build마저 실패하면 옛 스캔 경로로 떨어집니다(fail-open, `docs/context-injection.md`의 세 경로 표). 주입되는 것은 질문과 맞물린 block들이지 page 통짜가 아니고, 긴 block은 질문과 겹치는 행만 320자 안에서 싣습니다. supersedes로 대체된 낡은 page는 `sup→새 page` 한 줄만 나옵니다. 정본과 한 토큰도 겹치지 않으면 아무것도 주입하지 않고, 무주입 문턱은 옵션(`LLMWIKI_CONTEXT_SILENCE`)입니다. 어떤 오류에서도 질문을 막지 않습니다.
+`scripts/llmwiki_context.py`는 Codex와 Claude Code의 `UserPromptSubmit` hook으로 붙어, 질문마다 근거를 찾아 `<llmwiki-context v=3>` 블록(P/B/E 부분 그래프)으로 주입합니다. 검색은 `build`가 정본에서 굽는 `index/search.sqlite`로 하고, 색인이 없거나 낡으면 정본 `wiki/**/*.json`에서 메모리 색인을 만들어 같은 형식으로 주입하며, 그 build마저 실패하면 옛 스캔 경로로 떨어집니다(fail-open, `docs/context-injection.md`의 세 경로 표). 주입되는 것은 질문과 맞물린 block들이지 page 통짜가 아니고, 긴 block은 질문과 겹치는 행만 320자 안에서 싣습니다. supersedes로 대체된 낡은 page는 `sup→새 page` 한 줄만 나옵니다. 정본과 한 토큰도 겹치지 않으면 아무것도 주입하지 않고, 무주입 문턱은 옵션(위키 설정 `tools/config/context.json`의 `silence`, 또는 `LLMWIKI_CONTEXT_SILENCE`)입니다. 어떤 오류에서도 질문을 막지 않습니다.
 
 `tools/config/context.json`의 `always` 목록에 적어 둔 page는 검색 결과와 무관하게 매 질문에 고정으로 붙고, `SessionStart` hook(세션 시작·재개·clear·**컴팩트 직후**)에서도 같은 목록이 나갑니다 — 세션이 새로 열리거나 컴팩트로 컨텍스트가 비워져도 고정 항목만은 곧바로 다시 채워집니다. 자세한 스키마와 예산은 [`docs/context-injection.md`](docs/context-injection.md#세션-시작컴팩트-직후에도-나간다)를 보세요.
 
@@ -191,6 +191,8 @@ python3 scripts/llmwiki_context.py get 폐기-icd-코드 --block <id>  # 그 blo
 ```json
 { "always": ["ai-작업-규칙"], "always_max_bytes": 800 }
 ```
+
+같은 파일에 무주입 문턱(`"silence"`, 선택 `"hint"`)도 둘 수 있습니다. 큰 위키에서는 위키와 무관한 질문도 흔한 낱말 하나로 근거가 예산만큼 실리므로, 자기 질문 세트로 `scripts/llmwiki_eval.py --silence T`를 돌려 gold 주입을 잃지 않는 T를 찾아 둡니다. 환경변수 `LLMWIKI_CONTEXT_SILENCE`가 있으면 그쪽이 이기고, 문턱에 걸려도 고정 항목은 나갑니다.
 
 검색 점수와 무관하게 늘 나가고, 예산은 검색 몫과 따로 잡아 근거를 밀어내지 않습니다(전체의 절반을 넘지 못합니다). 고정한 page는 검색 결과에서 중복으로 다시 싣지 않습니다. 설정이 없으면 아무것도 고정하지 않습니다.
 

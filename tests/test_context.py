@@ -208,7 +208,7 @@ class ProjectionTest(ContextCase):
 
 
 # --------------------------------------------------------------------------- 고정 주입
-class AlwaysTest(WorkspaceCase):
+class AlwaysCase(WorkspaceCase):
     def setUp(self) -> None:
         super().setUp()
         self.root_path = Path(self.root).resolve()
@@ -228,6 +228,8 @@ class AlwaysTest(WorkspaceCase):
     def build(self, query: str) -> str:
         return ctx.build_context(self.root_path, query)[0]
 
+
+class AlwaysTest(AlwaysCase):
     def test_without_config_nothing_is_pinned(self) -> None:
         self.assertEqual(ctx.render_always(self.root_path), "")
 
@@ -281,6 +283,35 @@ class AlwaysTest(WorkspaceCase):
                                   max_bytes=ctx.MAX_BYTES, max_tokens=ctx.MAX_TOKENS)
         self.assertTrue(stats["injected"])
         self.assertIn("ai-작업-규칙", out)
+
+class ThresholdConfigTest(AlwaysCase):
+    """무주입 문턱은 위키마다 맞는 값이 달라 그 위키의 context.json 에 둘 수 있다 — 환경변수가 이긴다."""
+
+    def configure(self, **values: object) -> None:
+        path = self.root_path / ctx.ALWAYS_CONFIG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"always": ["ai-작업-규칙"], **values}, ensure_ascii=False), encoding="utf-8")
+
+    def test_the_wiki_config_silences_a_weak_match_but_keeps_the_pins(self) -> None:
+        self.configure(silence=1e9)
+        text, result = ctx.build_context(self.root_path, "폐기 ICD 코드는 몇 건인가요?")[:2]
+        self.assertTrue(result.reason.startswith("below-threshold"), result.reason)
+        self.assertIn("page:ai-작업-규칙", text)                    # 고정 항목은 그대로 간다
+        self.assertNotIn("324건", text)
+        self.assertEqual(ctx.threshold(self.root_path, ctx.ENV_SILENCE, "silence", 0.0), 1e9)
+
+    def test_the_environment_wins_over_the_wiki_config(self) -> None:
+        self.configure(silence=1e9)
+        os.environ[ctx.ENV_SILENCE] = "0"
+        text = ctx.build_context(self.root_path, "폐기 ICD 코드는 몇 건인가요?")[0]
+        self.assertIn("324건", text)
+
+    def test_a_bad_value_is_ignored(self) -> None:
+        for bad in ("높게", True, None, [1]):
+            with self.subTest(bad=bad):
+                self.configure(silence=bad)
+                self.assertEqual(ctx.threshold(self.root_path, ctx.ENV_SILENCE, "silence", 0.0), 0.0)
+
 
 # --------------------------------------------------------------------------- hint
 class HintTest(ContextCase):

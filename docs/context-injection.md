@@ -167,16 +167,22 @@ SessionStart hook (source: startup / resume / clear / compact / fork)
 지키면서 answerable 주입을 0.47 이상 올리지 못했고, 문턱을 켜면 정답 전달이 0.543 → 0.478 로
 떨어졌다(bench/FINAL_PROPOSAL.md §4). 무관 질문에 3.4 KB 를 쓰는 비용은 하루 약 $0.2 수준이다.
 
-켜고 싶으면 환경변수로 켠다.
+켜고 싶으면 그 위키의 `tools/config/context.json` 에 두거나 환경변수로 켠다. 둘 다 있으면
+환경변수가 이긴다 — 위키 설정은 git 으로 그 위키를 쓰는 모든 기계에 같이 간다.
+
+```json
+{ "always": ["ai-작업-규칙"], "silence": 1000, "hint": 0 }
+```
 
 ```bash
 export LLMWIKI_CONTEXT_SILENCE=770   # raw_top × coverage 가 이 값 미만이면 무주입
 export LLMWIKI_CONTEXT_HINT=500      # (선택) HINT ≤ 신호 < SILENCE 면 본문 대신 주소(A) 줄만
 ```
 
-770 은 동결 자연 세트에서 고른 값이다. **위키마다 질문 로그로 다시 보정해야 한다** — 다른
-위키에서 같은 값이 맞는다고 가정하지 않는다. `context "질문" --json` 의 `signals.raw_x_cov` 로
-자기 위키의 분포를 볼 수 있다.
+770 은 동결 자연 세트에서 고른 값이다. **위키마다 질문 세트로 다시 보정해야 한다** — 다른
+위키에서 같은 값이 맞는다고 가정하지 않는다. `scripts/llmwiki_eval.py 질문.json --silence T` 로
+gold 주입을 잃지 않는 가장 큰 T 를 찾아 그 위키 설정에 둔다. `context "질문" --json` 의
+`signals.raw_x_cov` 로 자기 위키의 분포를 볼 수 있다. 문턱에 걸려도 고정(always) 항목은 나간다.
 
 색인이 없을 때의 메모리 색인 경로도 같은 문턱을 쓴다. 최후 스캔 경로(`mode=scan`)만 옛 규칙
 (점수 6.0 · 커버리지 0.34 · hint 주소 3줄)이 그대로 동작한다.
@@ -299,8 +305,8 @@ python3 $S install --dry-run               # 설치될 hook 명령 미리보기
 | `LLMWIKI_CONTEXT_MAX_TOKENS` | `2000` | 주입 본문 추정 토큰 상한 |
 | `LLMWIKI_CONTEXT_INDEX` | `1` | `0` 이면 디스크 색인을 쓰지 않고 정본에서 메모리 색인을 만든다 (`mode=memory`) |
 | `LLMWIKI_CONTEXT_MEMORY` | `1` | `0` 이면 디스크 색인도 메모리 색인도 쓰지 않고 최후 스캔 경로로 간다 (`mode=scan`, `fallback=disabled;memory-disabled`, 옛 형식) |
-| `LLMWIKI_CONTEXT_SILENCE` | `0` (끔) | 무주입 문턱 `raw_top × coverage`. 위키마다 재보정 |
-| `LLMWIKI_CONTEXT_HINT` | `0` (끔) | 주소만(A) 구간 문턱. SILENCE 와 함께 쓴다 |
+| `LLMWIKI_CONTEXT_SILENCE` | `context.json` 의 `silence`, 없으면 `0` (끔) | 무주입 문턱 `raw_top × coverage`. 위키마다 재보정 |
+| `LLMWIKI_CONTEXT_HINT` | `context.json` 의 `hint`, 없으면 `0` (끔) | 주소만(A) 구간 문턱. SILENCE 와 함께 쓴다 |
 | `LLMWIKI_CONTEXT_TIMEOUT` | `6` | hook 워치독 초 |
 | `LLMWIKI_CONTEXT_LOG` | 없음 | 주입 통계 JSONL 경로 (질문 원문은 기록하지 않는다) |
 
