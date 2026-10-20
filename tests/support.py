@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 REPO = Path(__file__).resolve().parents[1]
+# 이 저장소의 wiki/ 가 raw/demo/ 를 ingest 한 데모 위키인가. 실데이터 위키(이 프레임워크를 들인 개인 저장소)
+# 에서는 데모의 내용에 대한 시험(데모 질문 세트, 데모 tag 목록, 데모 page 의 통합 품질)을 건너뛴다.
+DEMO_WIKI = (REPO / "raw" / "demo").is_dir()
 SCRIPT = REPO / "scripts" / "llmwiki.py"
 CONTEXT_SCRIPT = REPO / "scripts" / "llmwiki_context.py"
 

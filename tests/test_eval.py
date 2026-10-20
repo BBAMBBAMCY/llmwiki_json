@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import unittest
 
-from tests.support import REPO, WorkspaceCase, _load, make_page
+from tests.support import DEMO_WIKI, REPO, WorkspaceCase, _load, make_page
 
 EVAL_SCRIPT = REPO / "scripts" / "llmwiki_eval.py"
 DEMO_QUESTIONS = REPO / "tools" / "eval" / "demo-questions.json"
@@ -50,11 +51,20 @@ class EvalTest(WorkspaceCase):
             with self.assertRaises(SystemExit):
                 ev.load_questions(self.questions(rows))
 
+    def test_the_cli_reads_the_wiki_it_is_pointed_at(self) -> None:
+        path = self.questions([{"q": "릴리스는 무슨 요일에 나가나", "gold_slug": "릴리스"}, {"q": "zzqq xxyy"}])
+        proc = subprocess.run([sys.executable, str(EVAL_SCRIPT), str(path), "--root", str(self.root), "--json"],
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual((report["pages"], report["gold_injected"], report["unrelated_bytes_mean"]), (2, 1.0, 0.0))
+
     def test_injected_pages_are_read_from_the_body_lines(self) -> None:
         text = "<llmwiki-context v=3>\nP a concept\nB a#x:1 cur | 본문\nE a#x:1 related→b\nP old concept sup→a\nB c#y:1 cur | 셋\n"
         self.assertEqual(ev.injected_slugs(text), ["a", "c"])
 
 
+@unittest.skipUnless(DEMO_WIKI, "wiki/ 가 데모 위키가 아니다 — 데모 질문 세트는 데모 page 를 가리킨다")
 class DemoSetTest(WorkspaceCase):
     def test_the_demo_questions_point_at_demo_pages(self) -> None:
         rows = json.loads(DEMO_QUESTIONS.read_text(encoding="utf-8"))

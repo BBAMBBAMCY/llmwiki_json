@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import unittest
 
-from tests.support import REPO, WorkspaceCase, llmwiki, make_page
+from tests.support import DEMO_WIKI, REPO, WorkspaceCase, llmwiki, make_page
 
 
 def only(items: list[str], needle: str) -> list[str]:
@@ -391,11 +392,16 @@ class CompileQualityTest(WorkspaceCase):
         self.assertEqual(found, [f"page:policy-v2:{claims['block_order'][1]}: 본문이 '을 대체한다' 라고 하지만 "
                                  "supersedes 링크가 없다"])
 
+    def clean(self, *, fixtures: bool) -> None:
+        pages = llmwiki.Workspace(REPO, fixtures=fixtures).load_pages()
+        self.assertEqual(llmwiki.compile_warnings(pages, llmwiki.page_lookup(pages)), [])
+
+    @unittest.skipUnless(DEMO_WIKI, "wiki/ 가 데모 위키가 아니다 — 실데이터의 경고는 lint 가 알린다")
     def test_the_demo_wiki_has_none_of_these(self) -> None:
-        for fixtures in (False, True):
-            ws = llmwiki.Workspace(REPO, fixtures=fixtures)
-            pages = ws.load_pages()
-            self.assertEqual(llmwiki.compile_warnings(pages, llmwiki.page_lookup(pages)), [])
+        self.clean(fixtures=False)
+
+    def test_the_fixture_pages_have_none_of_these(self) -> None:
+        self.clean(fixtures=True)
 
 
 class OpenQuestionTest(WorkspaceCase):

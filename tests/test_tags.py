@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import unittest
 
-from tests.support import REPO, WorkspaceCase, llmwiki, make_page
+from tests.support import DEMO_WIKI, REPO, WorkspaceCase, llmwiki, make_page
 
 
 def only(items: list[str], needle: str) -> list[str]:
@@ -62,6 +63,7 @@ class VocabularyLintTest(VocabularyCase):
         pages = [make_page("a", "# A\n\n[[b]]\n", tags=["아무거나"]), make_page("b", "# B\n\n[[a]]\n", tags=["무엇이든"])]
         self.assertEqual(self.warnings(pages), [])
 
+    @unittest.skipUnless(DEMO_WIKI, "wiki/ 가 데모 위키가 아니다 — tools/config/tags.json 은 그 위키가 정한다")
     def test_the_repo_tags_are_all_in_its_list(self) -> None:
         vocabulary = llmwiki.Workspace(REPO).load_tag_vocabulary()
         self.assertIsNotNone(vocabulary)
