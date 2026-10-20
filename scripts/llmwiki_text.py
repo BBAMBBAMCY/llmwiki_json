@@ -19,25 +19,26 @@ WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]")
 LINK_SEPARATOR = re.compile(r"[\s_]+")
 CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
+MASK = "(접속 정보 생략)"
+# Every pattern's last group is the credential itself; redact replaces only
+# that span, so the name, separator and quotes around it keep their shape.
 # Named credentials: `password: x`, `"api_key": "x"`, `--token=x`.
 SECRET = re.compile(
     r"(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|"
     r"secret|connection[_-]?string|private[_-]?key|client[_-]?secret|token)"
-    r"\"?\s*[:=]\s*\"?[^\s,;\"']+")
-SECRET_MASK = r"\1: (접속 정보 생략)"
+    r"\"?\s*[:=]\s*\"?([^\s,;\"']+)")
+SECRET_MASK = MASK
 # Values that are credentials even without a name — auth headers, PEM, known
 # token prefixes, URL userinfo, CLI flags.
 SECRET_EXTRA = (
-    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._\-+/=]{8,}"), r"\1 (접속 정보 생략)"),
-    (re.compile(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----"),
-     "(접속 정보 생략)"),
-    (re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|"
-                r"xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[A-Za-z0-9_\-]{20,})"),
-     "(접속 정보 생략)"),
-    (re.compile(r"\b([a-z][a-z0-9+.\-]*://)[^\s/:@]+:[^\s/@]+@"), r"\1(접속 정보 생략)@"),
-    (re.compile(r"(?i)(--?(?:password|passwd|token|api[_-]?key|secret|auth)\b)\s+\S+"),
-     r"\1 (접속 정보 생략)"),
+    re.compile(r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})"),
+    re.compile(r"(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----)"),
+    re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|"
+               r"xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[A-Za-z0-9_\-]{20,})"),
+    re.compile(r"\b[a-z][a-z0-9+.\-]*://([^\s/:@]+:[^\s/@]+)@"),
+    re.compile(r"(?i)--?(?:password|passwd|token|api[_-]?key|secret|auth)\b\s+(\S+)"),
 )
+SECRET_PATTERNS = (SECRET, *SECRET_EXTRA)
 
 
 def norm(value: Any) -> str:
@@ -131,12 +132,31 @@ def implied_links(page: dict[str, Any]) -> list[dict[str, Any]]:
     return links
 
 
+def _value_start(match: re.Match[str]) -> int:
+    return match.start(match.re.groups)
+
+
+def exempt(match: re.Match[str]) -> bool:
+    """A value that is already the mask is not a credential — redact twice, get the same text."""
+    return match.string.startswith(MASK, _value_start(match))
+
+
+def _mask(match: re.Match[str]) -> str:
+    if exempt(match):
+        return match.group(0)
+    start, end = _value_start(match) - match.start(), match.end(match.re.groups) - match.start()
+    return match.group(0)[:start] + MASK + match.group(0)[end:]
+
+
 def redact(text: str) -> str:
-    """Mask anything that looks like a credential. Strip control characters too."""
+    """Mask anything that looks like a credential. Strip control characters too.
+
+    Idempotent: a masked value is left alone, so the index, the renderer and
+    the hook can each apply it without `(접속 정보 생략) 정보 생략)` piling up.
+    """
     text = CONTROL.sub("", str(text or ""))
-    text = SECRET.sub(SECRET_MASK, text)
-    for pattern, mask in SECRET_EXTRA:
-        text = pattern.sub(mask, text)
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub(_mask, text)
     return text
 
 
@@ -144,14 +164,14 @@ def secret_hit(text: str) -> str | None:
     """Short label if `text` looks like it holds a credential, else None.
 
     The label is the field name (`password`, `api_key`) or `credential` — never
-    the secret value itself.
+    the secret value itself. Masked values do not count.
     """
     text = CONTROL.sub("", str(text or ""))
-    match = SECRET.search(text)
-    if match:
-        return match.group(1)
-    for pattern, _mask in SECRET_EXTRA:
-        if pattern.search(text):
+    for match in SECRET.finditer(text):
+        if not exempt(match):
+            return match.group(1)
+    for pattern in SECRET_EXTRA:
+        if any(not exempt(match) for match in pattern.finditer(text)):
             return "credential"
     return None
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from tests.support import WorkspaceCase, llmwiki, make_page
+from tests.support import WorkspaceCase, llmwiki, llmwiki_context as ctx, make_page
 
 SECRET = "sk-live-should-never-leak-0123456789"
 
@@ -92,3 +92,43 @@ class BuildRefusesSecretsTest(WorkspaceCase):
         self.assertEqual(llmwiki.build(self.ws)["pages"], 2)
         shard = json.loads((self.viewer / "pages" / "alpha.json").read_text(encoding="utf-8"))
         self.assertIn("(접속 정보 생략)", shard["blocks"][bid]["source_text"])
+
+
+SHAPES = ("password: hunter2", "--password hunter2", "--token=abc123", "Authorization: Bearer abcdefghijklmnop",
+          "postgres://user:pa55@db.local/app", "sk-abcdefghijklmnopqrstuvwxyz0123", '"api_key": "abc123"',
+          "client_secret = zzz", "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----",
+          "token=x; password=y, secret: z")
+
+
+class RedactIdempotencyTest(WorkspaceCase):
+    def test_redacting_again_changes_nothing(self) -> None:
+        for shape in SHAPES:
+            once = llmwiki.redact(shape)
+            self.assertIn(llmwiki.T.MASK, once, shape)
+            self.assertEqual(llmwiki.redact(once), once, shape)
+            self.assertEqual(llmwiki.redact(llmwiki.redact(once)), once, shape)
+            self.assertNotIn("정보 생략) 정보 생략)", llmwiki.redact(llmwiki.redact(once)), shape)
+
+    def test_masked_text_is_no_longer_a_secret(self) -> None:
+        for shape in SHAPES:
+            self.assertIsNotNone(llmwiki.T.secret_hit(shape), shape)
+            self.assertIsNone(llmwiki.T.secret_hit(llmwiki.redact(shape)), shape)
+
+    def test_only_the_value_is_replaced(self) -> None:
+        self.assertEqual(llmwiki.redact('{"api_key": "abc123", "n": 1}'),
+                         '{"api_key": "(접속 정보 생략)", "n": 1}')
+        self.assertEqual(llmwiki.redact("password=hunter2;"), "password=(접속 정보 생략);")
+
+    def test_a_masked_page_validates_and_builds(self) -> None:
+        page = make_page("alpha", "# Alpha\n\n" + llmwiki.redact("password: hunter2, token=abc") + "\n")
+        self.assertEqual(llmwiki.validate_page(page, llmwiki.SchemaValidator.load(self.ws)), [])
+        self.write_pages([page])
+        self.assertEqual(llmwiki.build(self.ws)["pages"], 1)
+
+    def test_the_hook_output_carries_one_mask_per_secret(self) -> None:
+        leaky = make_page("키-메모", "# 키 메모\n\napi_key: sk-live-should-never-leak 키 회전은 금요일이다.\n",
+                          summary="키 회전.")
+        self.write_pages([leaky])                     # build 없이 — 메모리 색인이 저장·렌더에서 거듭 redact 한다
+        text, _result, _pages = ctx.build_context(self.root, "키 메모 회전 금요일")
+        self.assertIn("api_key: (접속 정보 생략) 키 회전", text)
+        self.assertNotIn("정보 생략) 정보 생략)", text)
