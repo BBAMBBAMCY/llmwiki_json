@@ -783,6 +783,9 @@ def validate_page(page: dict[str, Any], validator: SchemaValidator | None = None
 # JSON 은 이 사이가 어긋난다 — 검색은 data.text 를, 렌더와 그래프는 source_text·refs·links 를 봐서
 # 같은 page 가 화면마다 다른 말을 한다. 이 kind 들의 data 는 본문 밖의 값(판정·주장 목록)을 담아도 된다.
 DATA_FREE_KINDS = frozenset({"conflict", "current", "raw", "markdown"})
+# 그중 인용에서 나온 kind — data.text 는 본문에서 나오고, 나머지 data 필드(주장 목록 같은 것)는 본문 밖이다.
+QUOTED_FREE_KINDS = frozenset({"conflict", "current"})
+QUOTE_KINDS = frozenset({"quote", "conflict", "current", "open_question"})
 
 
 def parse_one(page_id: str, source_text: str) -> dict[str, Any] | None:
@@ -2123,15 +2126,40 @@ def change_recorded(page: dict[str, Any]) -> bool:
 
 
 def rebuilt_block(page: dict[str, Any], block: dict[str, Any], raw: str) -> dict[str, Any]:
-    """`raw` 를 정본으로 다시 만든 block (id 는 호출자가 정한다). 판정은 본문에서 나오지 않아 그대로 둔다."""
+    """`raw` 를 정본으로 다시 만든 block (id 는 호출자가 정한다).
+
+    판정(resolution)과 conflict·current 의 본문 밖 data(주장 목록 같은 것)는 본문에서 나오지 않아 그대로 잇는다.
+    """
     kind = block["kind"]
     if kind in DATA_FREE_KINDS:
         new = dict(block, refs=refs_in(raw), source_text=raw, fingerprint=block_fingerprint(kind, raw))
+        parsed = parse_one(page["id"], raw)
+        if kind in QUOTED_FREE_KINDS and isinstance(block.get("data"), dict) and parsed and parsed["kind"] == kind:
+            new["data"] = dict(block["data"], text=parsed["data"]["text"])
     else:
         new = dict(parse_one(page["id"], raw) or {})
         if new.get("kind") == kind and "resolution" in block:
             new["resolution"] = block["resolution"]
     return new
+
+
+def quoted_markdown(page_id: str, kind: str, text: Any) -> str | None:
+    """conflict·current 의 data.text 를 같은 kind·같은 text 로 다시 읽히는 인용으로."""
+    if not isinstance(text, str):
+        return None
+    raw = "\n".join(f"> {line}".rstrip() for line in text.split("\n"))
+    parsed = parse_one(page_id, raw)
+    return raw if parsed and parsed["kind"] == kind and parsed["data"].get("text") == text else None
+
+
+def original_fingerprint(page: dict[str, Any], bid: str, block: dict[str, Any]) -> str:
+    """block 이 마지막으로 정본에서 만들어질 때의 지문.
+
+    정식 id(`block:<slug>:<16hex>:<n>`) 가 품은 지문을 믿는다 — fingerprint 필드는 validate 가 맞는 값을
+    알려 주므로 손으로 고쳐졌을 수 있다. 정식 id 가 아니면 그 필드뿐이다.
+    """
+    found = re.fullmatch(re.escape(f"block:{page['id'].removeprefix('page:')}:") + r"([0-9a-f]{16}):[1-9][0-9]*", bid)
+    return found.group(1) if found else str(block.get("fingerprint") or "")
 
 
 def drift_diff(source_text: str, data: Any, rendered: str | None) -> list[str]:
@@ -2144,9 +2172,10 @@ def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
                    snapshot: dict[str, dict[str, Any]], recorded: bool) -> dict[str, Any] | None:
     """어긋난 block 하나의 진단: 무엇이 어긋났고, 어느 쪽이 새것이며, 고친 block 은 무엇인가.
 
-    source_text 와 data 가 서로 맞으면 지문·refs·id 만 다시 만든다. 둘이 다르면 원본(지문이나 ingest
-    snapshot 과 같은 쪽)을 가리고, 그 뒤의 변경이 updated·history 에 적혀 있을 때만 다른 쪽을 새것으로
-    본다. 그 밖에는 고치지 않는다(`new` 가 None).
+    source_text 와 data 가 서로 맞으면 지문·refs·id 만 다시 만든다. 둘이 다르면 원본(정식 id 가 품은 지문이나
+    ingest snapshot 과 같은 쪽)을 가리고, 그 뒤의 변경이 updated·history 에 적혀 있을 때만 다른 쪽을 새것으로
+    본다. 둘 다 원본 그대로인데 어긋났으면 파서가 바뀐 것이라 source_text 에서 다시 읽는다. 그 밖에는 고치지
+    않는다(`new` 가 None). conflict·current 는 data 의 text 만 본문에서 나온 것으로 맞춰 본다.
     """
     problems = block_drift(page, bid, block)
     if not problems:
@@ -2154,22 +2183,45 @@ def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
     kind, text, data = block["kind"], block["source_text"], block.get("data")
     out: dict[str, Any] = {"page_id": page["id"], "block_id": bid, "problems": problems, "diff": [],
                            "verdict": "undecided", "new": None}
-    parsed = parse_one(page["id"], text) if kind not in DATA_FREE_KINDS else None
-    if kind in DATA_FREE_KINDS or (parsed and parsed["kind"] == kind and parsed["data"] == data):
+    parsed = parse_one(page["id"], text)
+    quoted = kind in QUOTED_FREE_KINDS
+    if kind in DATA_FREE_KINDS and not quoted:            # raw·markdown: 파서가 만들지 않아 맞춰 볼 data 가 없다
+        agree, rendered = True, None
+    elif quoted:
+        mine = data.get("text") if isinstance(data, dict) else None
+        agree = not isinstance(mine, str) or bool(parsed and parsed["kind"] == kind and parsed["data"].get("text") == mine)
+        rendered = quoted_markdown(page["id"], kind, mine)
+    else:
+        agree = bool(parsed and parsed["kind"] == kind and parsed["data"] == data)
+        rendered = render_data(page["id"], kind, data)
+    if agree:
         out.update(verdict="derived", reason="source_text 와 data 는 같다 — 지문·refs·id 만 다시 만든다",
                    new=rebuilt_block(page, block, text))
         return out
-    rendered = render_data(page["id"], kind, data)
     out["diff"] = drift_diff(text, data, rendered)
+    witness = original_fingerprint(page, bid, block)
     original = snapshot.get(bid)
-    fingerprint = block.get("fingerprint")
-    source_is_original = fingerprint == block_fingerprint(kind, text) or bool(
+    same_data = (lambda a, b: isinstance(a, dict) and isinstance(b, dict) and a.get("text") == b.get("text")) \
+        if quoted else (lambda a, b: a == b)
+    source_is_original = block_fingerprint(kind, text) == witness or bool(
         original and original.get("source_text") == text)
-    data_is_original = bool(rendered is not None and fingerprint == block_fingerprint(kind, rendered)) or bool(
-        original and original.get("data") == data)
-    if source_is_original == data_is_original:
-        out["reason"] = ("둘 다 원본과 같다고 나온다" if source_is_original else
-                         "어느 쪽이 원본인지 알 수 없다 — 지문도 ingest snapshot 도 둘 다와 다르다")
+    data_is_original = bool(rendered is not None and block_fingerprint(kind, rendered) == witness) or bool(
+        original and same_data(original.get("data"), data))
+    rereadable = parsed is not None and (not quoted or parsed["kind"] == kind)
+    if source_is_original and parsed and kind in QUOTE_KINDS and parsed["kind"] in QUOTE_KINDS \
+            and parsed["kind"] != kind and isinstance(data, dict) and data.get("text") == parsed["data"].get("text"):
+        # 인용의 표지(⚠️ 상충·✅ 현행·❓ 미결) 를 읽는 법만 바뀌었다 — 본문도 data.text 도 그대로다
+        out.update(verdict="parser", reason=f"파서가 이 인용을 {parsed['kind']} 로 읽는다 — 본문은 그대로라 다시 읽는다",
+                   new=dict(parsed))
+        return out
+    if source_is_original and data_is_original:
+        if rereadable:
+            out.update(verdict="parser", reason="둘 다 만들어진 그대로다 — 파서가 바뀌어 source_text 를 다시 읽는다",
+                       new=rebuilt_block(page, block, text))
+        else:
+            out["reason"] = "둘 다 만들어진 그대로지만 source_text 가 같은 block 으로 다시 읽히지 않는다"
+    elif not source_is_original and not data_is_original:
+        out["reason"] = "어느 쪽이 원본인지 알 수 없다 — id 의 지문도 ingest snapshot 도 둘 다와 다르다"
     elif not recorded:
         out["reason"] = (f"{'data' if source_is_original else 'source_text'} 가 원본과 다르지만 "
                          "updated·history 에 그 뒤의 변경 기록이 없다")
@@ -2178,8 +2230,8 @@ def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
     elif source_is_original:
         out.update(verdict="data", reason="data 가 새것이다 — source_text 를 data 에서 다시 쓴다",
                    new=rebuilt_block(page, block, rendered))
-    elif parsed is None:
-        out["reason"] = "source_text 가 새것이지만 block 하나로 읽히지 않는다"
+    elif not rereadable:
+        out["reason"] = "source_text 가 새것이지만 같은 kind 의 block 하나로 읽히지 않는다"
     else:
         out.update(verdict="source_text", reason="source_text 가 새것이다 — data 를 다시 파싱한다",
                    new=rebuilt_block(page, block, text))

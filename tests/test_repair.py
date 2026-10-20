@@ -168,3 +168,75 @@ class RepairLinksAndLegacyTest(WorkspaceCase):
             raw = llmwiki.render_data("page:x", block["kind"], block["data"])
             self.assertIsNotNone(raw, block["kind"])
             self.assertEqual(llmwiki.parse_one("page:x", raw)["data"], block["data"], block["kind"])
+
+
+class RepairWitnessTest(RepairCase):
+    """원본 증거는 정식 id 가 품은 지문이다 — fingerprint 필드는 validate 가 알려 준 값으로 손대기 쉽다."""
+
+    def test_a_fingerprint_fixed_by_hand_does_not_let_old_data_win(self) -> None:
+        new_id = llmwiki.edit(self.ws, "note", self.para, "edit 로 고친 문단.")["block_id"]   # snapshot 에 없는 block
+        page = self.page()
+        block = page["blocks"][new_id]
+        block["source_text"] = "사람이 새로 쓴 최신 문단."
+        block["fingerprint"] = llmwiki.block_fingerprint("paragraph", block["source_text"])   # validate 가 알려 준 값
+        page["updated"] = "2026-08-25"
+        self.save(page)
+        report = llmwiki.repair(self.ws)
+        self.assertEqual([f["verdict"] for f in report["fixed"]], ["source_text"])
+        body = [b["source_text"] for b in self.page()["blocks"].values()]
+        self.assertIn("사람이 새로 쓴 최신 문단.", body)
+        self.assertNotIn("edit 로 고친 문단.", body)
+
+
+class RepairQuotedKindsTest(WorkspaceCase):
+    BODY = "---\ntype: concept\ntags: [t]\n---\n# Pol\n\n> ⚠️ 상충: A 는 3, B 는 5.\n\n[[beta]]\n"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.write_pages([make_page("beta", "# Beta\n\n[[pol]]\n")], name="beta.json")
+        self.dest = self.root / llmwiki.ingest(self.ws, self.write_raw("pol.md", self.BODY))["dest"]
+        page = json.loads(self.dest.read_text(encoding="utf-8"))
+        self.conflict = page["block_order"][1]
+        page["blocks"][self.conflict]["data"]["claims"] = ["A 기준", "B 기준"]
+        self.dest.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
+
+    def drift(self, *, updated: str | None) -> None:
+        page = json.loads(self.dest.read_text(encoding="utf-8"))
+        page["blocks"][self.conflict]["source_text"] = "> ⚠️ 상충: A 는 4, B 는 5."
+        if updated:
+            page["updated"] = updated
+        self.dest.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
+
+    def test_a_conflict_whose_text_drifted_is_not_passed_off_as_derived(self) -> None:
+        self.drift(updated=None)
+        report = llmwiki.repair(self.ws)
+        self.assertEqual(report["fixed"], [])
+        self.assertIn("변경 기록이 없다", report["undecided"][0]["reason"])
+
+    def test_a_newer_conflict_text_keeps_the_claims(self) -> None:
+        self.drift(updated="2026-08-25")
+        report = llmwiki.repair(self.ws)
+        self.assertEqual([f["verdict"] for f in report["fixed"]], ["source_text"])
+        page = llmwiki.find_page(self.ws, "pol")
+        block = page["blocks"][report["fixed"][0]["new_id"]]
+        self.assertEqual(block["data"], {"text": "⚠️ 상충: A 는 4, B 는 5.", "claims": ["A 기준", "B 기준"]})
+        self.assertEqual(block["resolution"], {"status": "unresolved"})
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_a_quote_the_parser_now_reads_differently_is_reclassified(self) -> None:
+        page = make_page("old", "# Old\n\n> ❓ 미결: 격주로 바꿀 것인가?\n> owner: release\n\n[[beta]]\n")
+        bid = page["block_order"][1]
+        quote = dict(page["blocks"].pop(bid))                     # 옛 파서는 이것을 quote 로 읽었다
+        quote["kind"] = "quote"
+        quote["data"] = {"text": quote["data"]["text"]}
+        quote["fingerprint"] = llmwiki.block_fingerprint("quote", quote["source_text"])
+        quote["id"] = llmwiki.block_id_of("page:old", quote["fingerprint"], 1)
+        page["blocks"][quote["id"]] = quote
+        page["block_order"][1] = quote["id"]
+        self.write_pages([page], name="old.json")
+        report = llmwiki.repair(self.ws)
+        self.assertEqual([(f["block_id"], f["verdict"]) for f in report["fixed"]], [(quote["id"], "parser")])
+        stored = llmwiki.find_page(self.ws, "old")
+        new = stored["blocks"][stored["block_order"][1]]
+        self.assertEqual((new["kind"], new["data"]["owner"]), ("open_question", "release"))
+        self.assertEqual(stored["block_aliases"], {quote["id"]: new["id"]})
