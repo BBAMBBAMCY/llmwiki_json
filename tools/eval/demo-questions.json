@@ -1,0 +1,17 @@
+[
+  {"q": "What day of the week do releases go out?", "gold_slug": "release-process"},
+  {"q": "What does each release note carry?", "gold_slug": "release-process"},
+  {"q": "Who reviews a change, and can the author review it?", "gold_slug": "review-policy"},
+  {"q": "Is a review recorded even when nothing needed changing?", "gold_slug": "review-policy"},
+  {"q": "Where does escalation go when a change cannot ship on schedule?", "gold_slug": "review-policy"},
+  {"q": "Which workstream collects records from upstream systems and normalises them?", "gold_slug": "alpha-platform"},
+  {"q": "What does Alpha Platform depend on for every schema change?", "gold_slug": "alpha-platform"},
+  {"q": "How does Beta Search answer a query instead of matching strings?", "gold_slug": "beta-search"},
+  {"q": "What is the sample topic entity for?", "gold_slug": "sample-topic"},
+  {"q": "What does the team handbook say about how the workstreams run day to day?", "gold_slug": "team-handbook"},
+  {"q": "How do I boil pasta al dente?", "gold_slug": null},
+  {"q": "What is the capital of France?", "gold_slug": null},
+  {"q": "How many moons does Jupiter have?", "gold_slug": null},
+  {"q": "김치찌개 맛있게 끓이는 법", "gold_slug": null},
+  {"q": "내일 서울 날씨는 어때?", "gold_slug": null}
+]

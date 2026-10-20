@@ -759,7 +759,7 @@ def build_context(root: Path, query: str, **options: Any) -> tuple[str, Result, 
     idx, why = open_index(root) if use_index else (None, "disabled")
     if idx is not None:
         try:
-            return _build_indexed(idx, root, query, preamble, pinned, **graph_options)
+            return build_indexed(idx, root, query, preamble, pinned, **graph_options)
         except Exception as exc:  # noqa: BLE001 - 색인 경로의 어떤 오류도 다음 경로로 떨어진다
             why = f"index-error:{type(exc).__name__}"
         finally:
@@ -771,7 +771,7 @@ def build_context(root: Path, query: str, **options: Any) -> tuple[str, Result, 
         idx, memory_why = open_memory_index(root)
         if idx is not None:
             try:
-                text, result, pages = _build_indexed(idx, root, query, preamble, pinned,
+                text, result, pages = build_indexed(idx, root, query, preamble, pinned,
                                                      mode="memory", **graph_options)
                 result.fallback = why
                 result.stats["memory_build_ms"] = round((time.perf_counter() - started) * 1000, 1)
@@ -809,11 +809,14 @@ def build_context(root: Path, query: str, **options: Any) -> tuple[str, Result, 
                                        max_tokens=max_tokens), result, pages)
 
 
-def _build_indexed(idx: IDX.Index, root: Path, query: str, preamble: str, pinned: set[str], *,
+def build_indexed(idx: IDX.Index, root: Path, query: str, preamble: str, pinned: set[str], *,
                    max_bytes: int, max_tokens: int, limit: int, cut: float, silence_t: float,
                    hint_t: float, row_chars: int, mode: str = "index"
                    ) -> tuple[str, Result, list[dict[str, Any]]]:
-    """index 와 memory 경로가 같이 쓰는 검색·투영·렌더. 출력 문법은 둘 다 P/B/E 다."""
+    """index 와 memory 경로가 같이 쓰는 검색·투영·렌더. 출력 문법은 둘 다 P/B/E 다.
+
+    색인 하나를 여러 질문에 거듭 쓰는 평가(`scripts/llmwiki_eval.py`) 도 이것을 부른다.
+    """
     result, groups, weights = retrieve_indexed(idx, root, query, limit=limit, cut=cut,
                                                silence_t=silence_t, hint_t=hint_t, mode=mode)
     if pinned:

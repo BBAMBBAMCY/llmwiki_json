@@ -19,10 +19,12 @@ raw/                   불변 원본 소스 큐 + 기존 live source symlink
 index/                 재생성 가능한 catalog/map/graph/routes/stats/revision + search.sqlite(검색 색인)
 tools/schema/          JSON Schema
 tools/config/          프로젝트 그룹·색상 설정
+tools/eval/            데모 위키용 랭킹 평가 질문 세트
 scripts/llmwiki.py     ingest/build/query/get/render/outline/lint/log CLI
 scripts/llmwiki_index.py  검색 색인(`index/search.sqlite`) build·검색·부분 그래프 렌더 (표준 라이브러리만)
 scripts/llmwiki_context.py  Codex·Claude 자동 컨텍스트 주입 hook/MCP CLI
 scripts/llmwiki_routine.py  주기 ingest 루틴 (스케줄러 등록·git 연동)
+scripts/llmwiki_eval.py  랭킹 평가 — gold 주입률·1위 비율·무관 질문 주입 바이트
 scripts/install.sh     자동 주입 설치·검증·제거 (POSIX, macOS/Linux)
 scripts/install.ps1    같은 것의 Windows 판 (PowerShell 5.1+)
 tests/                 백엔드 unittest 스위트
@@ -218,6 +220,15 @@ git push private HEAD:main                                            # 위키�
 이름이 같은 remote가 이미 있으면 덮어쓰지 않고 그대로 둡니다. 루틴을 걸어 두었다면 커밋과 push까지 루틴이 합니다.
 
 설치 옵션·지원 범위·Codex hook 신뢰 절차는 [`docs/install.md`](docs/install.md), 동작 원리와 hook 스키마 차이는 [`docs/context-injection.md`](docs/context-injection.md)에 있습니다.
+
+## 랭킹 평가
+
+```bash
+python3 scripts/llmwiki_eval.py tools/eval/demo-questions.json                  # 데모 위키
+python3 scripts/llmwiki_eval.py 내-질문.json --root ~/my-wiki --json --details   # 자기 위키
+```
+
+입력은 `[{"q": "질문", "gold_slug": "slug"}]` 배열이고, `gold_slug`가 null이면 위키와 무관한 질문입니다(목록이면 그중 하나면 맞습니다). 출력은 셋입니다 — **gold 주입률**(gold page의 본문 block이 주입된 비율), **1위 비율**(검색 1위가 gold인 비율), **무관 질문의 평균 주입 바이트**. 정본에서 메모리 색인을 한 번 굽고 훅의 메모리 경로와 같은 검색·투영·렌더를 돌며, 아무것도 쓰지 않습니다. 저장소에는 데모 질문만 둡니다 — 자기 위키의 질문 세트는 그 위키 쪽에 둡니다.
 
 ## 테스트
 
