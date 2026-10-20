@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import unittest
 from pathlib import Path
 from unittest import mock
 
@@ -638,3 +639,67 @@ class HugeBlockTest(IndexCase):
         self.assertEqual(stats["pages"], len(CORPUS) + 1)
         hits = llmwiki.query(self.ws, "row 가가")
         self.assertEqual(hits[0]["id"], "page:거대-로그")
+
+
+class RerankTest(unittest.TestCase):
+    """어휘 상위 page 를 page 성격으로 다시 매긴다: 길이 정규화, type 가중, hub 감점."""
+
+    QUERY = "배포 승인 절차 금요일 검토 회의"
+    FILLER = [make_page(f"f{i}", f"# F{i}\n\n무관한 문장 {i} 이다.\n\n둘째 문장.\n") for i in range(30)]
+
+    def ranked(self, pages: list[dict], query: str | None = None) -> list[tuple[str, float]]:
+        idx = IDX.build_memory([("wiki/x.json", p) for p in [*pages, *self.FILLER]])
+        try:
+            return [(h.page_id, h.score) for h in idx.search(query or self.QUERY).hits]
+        finally:
+            idx.close()
+
+    def spread(self, reps: int, slug: str = "long", type: str = "concept") -> dict:
+        """질문 토큰을 block 마다 하나씩 흩어 가진 page — 꼬리 합으로만 높아진다."""
+        words = ["배포", "승인", "절차", "금요일", "검토", "회의"] * reps
+        return make_page(slug, f"# {slug}\n\n" + "\n\n".join(f"{w} 관련 메모 {i}." for i, w in enumerate(words)) + "\n",
+                         type=type)
+
+    def test_page_length_normalisation_lets_the_focused_page_win(self) -> None:
+        short = make_page("short", "# Short\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n")
+        with mock.patch.object(IDX, "PAGE_B", 0.0):
+            self.assertEqual(self.ranked([short, self.spread(1)])[0][0], "page:long")
+        self.assertEqual(self.ranked([short, self.spread(1)])[0][0], "page:short")
+        with mock.patch.object(IDX, "PAGE_B", 0.0):
+            raw = dict(self.ranked([short, self.spread(4)]))
+        normed = dict(self.ranked([short, self.spread(4)]))
+        self.assertGreater(normed["page:short"] / normed["page:long"], raw["page:short"] / raw["page:long"])
+
+    def test_compiled_pages_outrank_an_equal_source(self) -> None:
+        body = "# 규칙\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n"
+        pages = [make_page("a-source", body, type="source"), make_page("b-concept", body, type="concept")]
+        with mock.patch.object(IDX, "TYPE_W", {}):
+            self.assertEqual(self.ranked(pages)[0][0], "page:a-source")      # 동점이면 id 순
+        for kind in ("concept", "entity", "synthesis"):
+            pages[1]["type"] = kind
+            self.assertEqual(self.ranked(pages)[0][0], "page:b-concept", kind)
+
+    def test_a_hub_page_loses_its_lead(self) -> None:
+        gold = make_page("gold", "# Gold\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n")
+        for blocks, demoted in ((300, False), (301, True)):
+            hub = make_page("hub", "# 주간 로그\n\n" + "\n\n".join(
+                "배포 승인 절차 금요일 검토 회의 메모." if i < 8 else f"주간 메모 {i}." for i in range(blocks - 1)) + "\n")
+            self.assertEqual(len(hub["block_order"]), blocks)
+            self.assertEqual(self.ranked([gold, hub])[0][0], "page:gold" if demoted else "page:hub", blocks)
+        tagged = make_page("hub", "# 태그 색인\n\n" + "\n\n".join(["배포 승인 절차 금요일 검토 회의 메모."] * 3) + "\n",
+                           tags=[f"t{i}" for i in range(200)])
+        self.assertEqual(self.ranked([gold, tagged])[0][0], "page:hub")
+        tagged["tags"].append("t200")
+        self.assertEqual(self.ranked([gold, tagged])[0][0], "page:gold")
+
+    def test_the_silence_signals_keep_their_raw_scale(self) -> None:
+        pages = [make_page("short", "# Short\n\n배포 승인 절차.\n"), self.spread(3)]
+        idx = IDX.build_memory([("wiki/x.json", p) for p in [*pages, *self.FILLER]])
+        try:
+            signals = idx.search(self.QUERY).signals
+            with mock.patch.object(IDX.Index, "_rerank", lambda self, lex, blocks: lex):
+                raw = idx.search(self.QUERY).signals
+        finally:
+            idx.close()
+        for key in ("raw_top", "coverage", "content_raw_top", "top_block_impact"):
+            self.assertEqual(signals[key], raw[key], key)

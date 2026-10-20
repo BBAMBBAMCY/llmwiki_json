@@ -74,6 +74,12 @@ CAND_PAGES = 200
 W_ANCHOR = 1.35           # related/supersedes 간선을 든 block = 큐레이션된 주장
 W_CURRENT = 1.04
 W_CONFLICT = 0.97
+# 어휘 상위 CAND_PAGES 개 page 를 page 성격으로 다시 매긴다 (`Index._rerank`, 조회 때 계산 — 색인 바이트는 그대로).
+PAGE_B = 0.25             # page 길이 정규화: 나머지 block 합에 1/(1 - b + b·본문 block 수/평균) 을 곱한다
+TYPE_W = {"concept": 1.2, "entity": 1.2, "synthesis": 1.2}   # 통합된 지식 page 를 원본 요약보다 앞에
+HUB_TAGS = 200            # tag 가 이보다 많거나
+HUB_BLOCKS = 300          # block 이 이보다 많은 page 는 근거라기보다 목록(hub) 이다
+HUB_W = 0.5
 # ------------------------------------------------------------------ 그래프층
 SEEDS = 30
 STEPS = 2
@@ -1166,6 +1172,8 @@ class Index:
         total_len = int(meta.get("total_len") or 0)
         # 평균 길이·df 는 live 값 — cold build 와 증분본이 같은 점수를 낸다
         self.avg_len = (total_len / self.nblocks) if self.nblocks and total_len else 1.0
+        # page 당 본문 block 수의 평균 — 색인된 block 에서 page 마다 하나인 제목 가상 block 을 뺀다
+        self.avg_body = max(1.0, (self.nblocks - self.npages) / self.npages) if self.npages else 1.0
         noev = array("q")
         noev.frombytes(meta.get("noev") or b"")
         self.noev: frozenset[int] = frozenset(noev)
@@ -1256,6 +1264,39 @@ class Index:
         sig["top1_n_blocks"] = float(len(page_blocks[top]))
         return page_lex, page_blocks
 
+    def _page_facts(self, rids: list[int]) -> dict[int, tuple[str, int, int, int]]:
+        """rid → (type, tag 수, block 수, 색인된 본문 block 수)."""
+        out: dict[int, tuple[str, int, int, int]] = {}
+        for i in range(0, len(rids), 900):
+            chunk = rids[i:i + 900]
+            for rid, kind, tags, n_blocks, n_body in self.db.execute(
+                    "SELECT p.rid, p.type, p.tags, COUNT(b.rid), COALESCE(SUM(b.indexed), 0) FROM page p "
+                    "LEFT JOIN blk b ON b.prid = p.rid AND b.pos >= 0 WHERE p.rid IN (%s) GROUP BY p.rid"
+                    % ",".join("?" * len(chunk)), chunk):
+                out[rid] = (str(kind or ""), len(str(tags).split(",")) if tags else 0, int(n_blocks), int(n_body))
+        return out
+
+    def _rerank(self, page_lex: dict[int, float], page_blocks: dict[int, list[tuple[float, int]]]
+                ) -> dict[int, float]:
+        """어휘 상위 CAND_PAGES 개 page 의 점수를 page 성격으로 고친다. 나머지는 후보에서 빠진다.
+
+        1. 길이 정규화 — 최고 block 은 두고 나머지 block 합만 page 길이(본문 block 수)로 BM25 처럼 나눈다.
+           block 이 많은 page 가 질문 토큰을 여기저기 조금씩 품어 1위를 가져가지 않게 한다.
+        2. type 가중 — concept·entity·synthesis 는 소스를 통합한 page 라 원본 요약보다 앞에 둔다.
+        3. hub 감점 — tag 가 HUB_TAGS 를, block 이 HUB_BLOCKS 를 넘는 page 는 목록이지 근거가 아니다.
+        신호(raw_top 등) 는 `_lex` 의 원 점수 그대로다 — 무주입 문턱이 그 값으로 보정돼 있다.
+        """
+        cand = sorted(page_lex, key=lambda p: (-page_lex[p], p))[:CAND_PAGES]
+        facts = self._page_facts(cand)
+        out: dict[int, float] = {}
+        for p in cand:
+            kind, n_tags, n_blocks, n_body = facts.get(p, ("", 0, 0, 0))
+            blocks = page_blocks[p]
+            norm = 1.0 / (1.0 - PAGE_B + PAGE_B * n_body / self.avg_body) if n_body else 1.0
+            weight = TYPE_W.get(kind, 1.0) * (HUB_W if n_tags > HUB_TAGS or n_blocks > HUB_BLOCKS else 1.0)
+            out[p] = (blocks[0][0] + LEX_TAIL_W * norm * sum(sc for sc, _ in blocks[1:])) * weight
+        return out
+
     # --------------------------------------------------------- 그래프층
     def _ppr(self, page_lex: dict[int, float], top: float
              ) -> tuple[dict[int, float], dict[int, tuple[float, str]]]:
@@ -1306,6 +1347,7 @@ class Index:
             self.last_signals["top_score"] = 0.0
             self.last_signals["second_score"] = 0.0
             return SearchResult([], dict(self.last_signals))
+        page_lex = self._rerank(page_lex, page_blocks)
         noev = self.noev
         if noev:
             for prid in list(page_blocks):

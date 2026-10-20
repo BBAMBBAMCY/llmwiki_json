@@ -19,6 +19,7 @@
                — 그 build 마저 실패하면(정본 손상 등)
                  ⇢ 최후 스캔 경로(옛 <llmwiki-context> 형식)로 exit 0 을 지킨다 [mode=scan]
             2. 색인 검색: 한글 2-gram + 라틴 낱말 + `_ . - : /` 조각, BM25 impact posting,
+               어휘 상위 200 page 를 page 성격으로 다시 매김(길이 정규화·type 가중·hub 감점),
                간선 가중 확산 2 step, supersedes 체인은 head 로 접는다
             3. hit page 의 정본 sha 를 index/map.json 의 값과 대조 — 다르면 그 page 만 정본 재독
             4. 부분 그래프 투영: page 10개(1위 대비 50% 컷), page 당 근거 block ≤ 4, 큐레이션 간선
@@ -65,6 +66,23 @@ p50 은 6 page 53 ms, 296 page 개인 위키 517 ms, 334 page 자연 세트 399 
 
 측정(bench/IMPL_REPORT.md): 296 page 개인 위키에서 훅 프로세스 전체가 정본 스캔 120~500 ms →
 색인 60~90 ms(인터프리터 기동 포함), 자연 세트 334 page 의 검색 p50 은 62 ms → 2.4 ms.
+
+### 다시 매김 (page 성격)
+
+어휘 점수는 `최고 block + 0.25 × 나머지 block 합` 이다. 그 상위 200 page 를 세 가지로 다시 매긴다
+(`llmwiki_index.Index._rerank`, 조회 때 계산 — 색인 바이트는 그대로다).
+
+| 보정 | 식 | 이유 |
+|---|---|---|
+| 길이 정규화 | 나머지 block 합 × 1/(1 − 0.25 + 0.25 × 본문 block 수/평균) | block 이 많은 page 가 질문 토큰을 여기저기 조금씩 품어 1위를 가져갔다 |
+| type 가중 | concept·entity·synthesis × 1.2 | 소스를 통합한 page 를 원본 요약보다 앞에 둔다 |
+| hub 감점 | tag 200개 초과 또는 block 300개 초과 × 0.5 | 목록·로그 page 는 근거가 아니라 주소다 |
+
+무주입 문턱이 쓰는 신호(`raw_top`·`coverage` 등)는 다시 매기기 전의 값이다. 값은 `scripts/llmwiki_eval.py`
+로 고른 것이다 — 동결 자연 세트(334 page·284 문항) 안에서 gold 주입률 0.7011 → 0.7228, 1위 비율
+0.5000 → 0.5380, 무관 질문 평균 주입 3739.4 → 3715.6 B 이고 셋 다 나빠지지 않는 조합 중 가장 좋았다.
+이 세트의 정답 page 는 91% 가 concept·entity·synthesis 라 type 가중이 유리하게 나온다 — 정답이 주로 원본
+요약에 있는 위키라면 자기 질문 세트로 다시 재야 한다.
 
 ### 주입 내용 (P/B/E)
 
