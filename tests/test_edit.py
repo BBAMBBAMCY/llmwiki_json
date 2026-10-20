@@ -186,3 +186,50 @@ class AliasContextTest(EditCase):
         errors = " ".join(llmwiki.validate_page(page, llmwiki.SchemaValidator.load(self.ws)))
         self.assertIn("is a live block id", errors)
         self.assertIn("points at unknown block", errors)
+
+
+class EditKeepsWhatTheBodyDoesNotSayTest(EditCase):
+    def setUp(self) -> None:
+        super().setUp()
+        new_id = llmwiki.edit(self.ws, "alpha", self.first, "> ⚠️ 상충: 두 문서의 수치가 다르다.")["block_id"]
+        page = self.stored()
+        page["blocks"][new_id]["resolution"] = {"status": "resolved", "current": "B"}
+        page["blocks"][new_id]["data"]["claims"] = ["A 기준", "B 기준"]
+        self.write_pages([page, self.stored("beta"), self.stored("gamma")])
+        self.conflict = new_id
+
+    def test_claims_and_judgement_survive_a_rewrite(self) -> None:
+        new_id = llmwiki.edit(self.ws, "alpha", self.conflict, "> ⚠️ 상충: 두 문서의 수치가 다르다(2판).")["block_id"]
+        block = self.stored()["blocks"][new_id]
+        self.assertEqual(block["data"]["claims"], ["A 기준", "B 기준"])
+        self.assertEqual(block["resolution"], {"status": "resolved", "current": "B"})
+
+    def test_the_old_id_goes_to_the_block_of_the_same_kind(self) -> None:
+        result = llmwiki.edit(self.ws, "alpha", self.conflict, "배경 문단.\n\n> ⚠️ 상충: 두 문서의 수치가 다르다(2판).")
+        page = self.stored()
+        heir = page["blocks"][result["block_id"]]
+        self.assertEqual(heir["kind"], "conflict")
+        self.assertEqual(heir["resolution"], {"status": "resolved", "current": "B"})
+        self.assertEqual(llmwiki.resolve(self.ws, self.conflict)[1]["kind"], "conflict")
+        self.assertEqual([page["blocks"][b]["kind"] for b in result["inserted"]], ["paragraph"])
+
+
+class EditGuardsTest(EditCase):
+    def test_an_unclosed_fence_is_refused(self) -> None:
+        with self.assertRaisesRegex(llmwiki.WikiError, "닫히지 않은"):
+            llmwiki.edit(self.ws, "alpha", self.first, "```sh\nmake build")
+        llmwiki.edit(self.ws, "alpha", self.first, "```sh\nmake build\n```")
+
+    def test_the_title_follows_its_h1(self) -> None:
+        heading = self.page["block_order"][0]
+        result = llmwiki.edit(self.ws, "alpha", heading, "# Alpha Platform")
+        self.assertEqual((result["title"], self.stored()["title"]), ("Alpha Platform", "Alpha Platform"))
+        self.assertEqual(llmwiki.find_page(self.ws, "Alpha Platform")["id"], "page:alpha")
+
+    def test_a_title_set_apart_from_the_h1_stays(self) -> None:
+        page = self.stored()
+        page["title"] = "알파 별칭"
+        self.write_pages([page, self.stored("beta"), self.stored("gamma")])
+        result = llmwiki.edit(self.ws, "alpha", page["block_order"][0], "# Alpha Platform")
+        self.assertNotIn("title", result)
+        self.assertEqual(self.stored()["title"], "알파 별칭")

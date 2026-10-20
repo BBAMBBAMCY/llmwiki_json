@@ -2090,9 +2090,18 @@ def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
         raise WikiError(f"{label}: 조각이 비었다 — edit 는 block 을 지우지 않는다")
     old = page["blocks"][old_id]
     news = [parsed[bid] for bid in order]
-    heir = next((new for new in news if new["fingerprint"] == old.get("fingerprint")), news[0])
-    if heir["kind"] == old.get("kind") and "resolution" in old:
-        heir["resolution"] = old["resolution"]  # 판정은 본문에서 나오지 않는다 — 고쳐 쓴다고 풀리지 않는다
+    for new in news:
+        lines = new["source_text"].split("\n")
+        if new["kind"] == "code" and not (len(lines) > 1 and lines[-1].startswith("```")):
+            raise WikiError(f"{label}: 닫히지 않은 ``` 가 있다 — 다음에 page 를 다시 읽으면 뒤의 block 을 code 로 삼킨다")
+    # 옛 id 는 내용이 같은 block, 없으면 kind 가 같은 block, 그것도 없으면 첫 block 이 잇는다
+    heir = next((new for new in news if new["fingerprint"] == old.get("fingerprint")), None) \
+        or next((new for new in news if new["kind"] == old.get("kind")), news[0])
+    if heir["kind"] == old.get("kind"):
+        if "resolution" in old:
+            heir["resolution"] = old["resolution"]  # 판정은 본문에서 나오지 않는다 — 고쳐 쓴다고 풀리지 않는다
+        if heir["kind"] in QUOTED_FREE_KINDS and isinstance(old.get("data"), dict):
+            heir["data"] = dict(old["data"], text=heir["data"]["text"])      # 주장 목록 같은 본문 밖 data
     taken = set(page["blocks"]) - {old_id}
     heir["id"] = old_id if carries_fingerprint(page, old_id, heir["fingerprint"]) \
         else fresh_block_id(page["id"], heir["fingerprint"], taken)
@@ -2115,6 +2124,9 @@ def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
     kept = {link_key(l["target"]) for l in updated["links"] if l["kind"] == "wiki"}
     if declared - kept:
         result["dropped_links"] = sorted(declared - kept)
+    title = h1_text(page)
+    if title is not None and page.get("title") == title and h1_text(updated) not in (None, title):
+        updated["title"] = result["title"] = h1_text(updated)    # 제목이 H1 에서 나온 page 는 H1 을 따른다
     stamp = today()
     updated["updated"] = stamp
     note = old_id if ids == [old_id] else f"{old_id} → {', '.join(ids)}"
@@ -2133,6 +2145,15 @@ def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
                     "previous": old_id, "dest": rel})
     result["build"] = build(ws, changed=[rel])
     return result
+
+
+def h1_text(page: dict[str, Any]) -> str | None:
+    """The first level-1 heading — where `ingest` takes a page's title from."""
+    for bid in page.get("block_order") or []:
+        block = page["blocks"].get(bid) or {}
+        if block.get("kind") == "heading" and block.get("data", {}).get("level") == 1:
+            return block["data"].get("text")
+    return None
 
 
 def read_fragment(text: str | None, file: str | None) -> str:
