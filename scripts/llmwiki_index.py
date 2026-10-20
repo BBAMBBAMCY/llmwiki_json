@@ -57,7 +57,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_text as T  # type: ignore[no-redef]
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 DB_NAME = "search.sqlite"
 WORK_NAME = "search.work.sqlite"      # build 만 여는 작업 DB(WAL). publish 본은 여기서 새 파일로 다시 쓴다
 STATE_NAME = "search.work.json"       # 지난 build 의 시작 시각·map root (mtime 스캔의 기준)
@@ -77,7 +77,7 @@ W_CONFLICT = 0.97
 # 어휘 상위 CAND_PAGES 개 page 를 page 성격으로 다시 매긴다 (`Index._rerank`, 조회 때 계산 — 색인 바이트는 그대로).
 PAGE_B = 0.25             # page 길이 정규화: 나머지 block 합에 1/(1 - b + b·본문 block 수/평균) 을 곱한다
 TYPE_W = {"concept": 1.2, "entity": 1.2, "synthesis": 1.2}   # 통합된 지식 page 를 원본 요약보다 앞에
-HUB_TAGS = 200            # tag 가 이보다 많거나
+HUB_TAGS = 200            # tag·keyword 가 이보다 많거나
 HUB_BLOCKS = 300          # block 이 이보다 많은 page 는 근거라기보다 목록(hub) 이다
 HUB_W = 0.5
 # ------------------------------------------------------------------ 그래프층
@@ -143,7 +143,7 @@ CREATE TABLE meta(k TEXT PRIMARY KEY, v) WITHOUT ROWID;
 CREATE TABLE page(rid INTEGER PRIMARY KEY, page_id TEXT NOT NULL, slug TEXT, title TEXT, type TEXT,
                   created TEXT, updated TEXT, source TEXT, sha256 TEXT, projects TEXT, tags TEXT,
                   sources TEXT, summary TEXT, meta TEXT, head INTEGER, sup_block TEXT, sup_state TEXT,
-                  unresolved INTEGER);
+                  unresolved INTEGER, labels INTEGER);
 CREATE UNIQUE INDEX page_pid ON page(page_id);
 CREATE INDEX page_slug ON page(slug);
 CREATE INDEX page_title ON page(title);
@@ -417,7 +417,7 @@ def page_record(rel: str, page: dict[str, Any], *, use_heading_paths: bool, sha2
                 str(page.get("created") or ""), str(page.get("updated") or ""), rel, sha256 or page_sha(page),
                 ",".join(page.get("projects") or []), ",".join(page.get("tags") or []),
                 ",".join(page.get("sources") or []), redact(norm(page.get("summary"))), meta,
-                prid, "", "", bad)
+                prid, "", "", bad, len(page.get("tags") or []) + len(page.get("keywords") or []))
     lookup_rows = [(key, prio, pid, prid) for key, prio in page_keys(page)]
     return PageRec(prid, pid, page_row, lookup_rows, links, blk_rows, posting, flags_of, curated,
                    total_len, n_indexed)
@@ -1141,7 +1141,7 @@ def file_digest(path: Path) -> str:
 
 # ------------------------------------------------------------------ 조회
 PAGE_COLS = ("rid", "page_id", "slug", "title", "type", "created", "updated", "source", "sha256", "projects",
-             "tags", "sources", "summary", "meta", "head", "sup_block", "sup_state", "unresolved")
+             "tags", "sources", "summary", "meta", "head", "sup_block", "sup_state", "unresolved", "labels")
 
 
 @dataclass
@@ -1269,15 +1269,17 @@ class Index:
         return page_lex, page_blocks
 
     def _page_facts(self, rids: list[int]) -> dict[int, tuple[str, int, int, int]]:
-        """rid → (type, tag 수, block 수, 색인된 본문 block 수)."""
+        """rid → (type, tag·keyword 수, block 수, 색인된 본문 block 수).
+
+        keyword 도 센다 — tag 를 keywords 로 옮긴 위키의 목록 page 가 hub 감점에서 빠지지 않게."""
         out: dict[int, tuple[str, int, int, int]] = {}
         for i in range(0, len(rids), 900):
             chunk = rids[i:i + 900]
-            for rid, kind, tags, n_blocks, n_body in self.db.execute(
-                    "SELECT p.rid, p.type, p.tags, COUNT(b.rid), COALESCE(SUM(b.indexed), 0) FROM page p "
+            for rid, kind, labels, n_blocks, n_body in self.db.execute(
+                    "SELECT p.rid, p.type, p.labels, COUNT(b.rid), COALESCE(SUM(b.indexed), 0) FROM page p "
                     "LEFT JOIN blk b ON b.prid = p.rid AND b.pos >= 0 WHERE p.rid IN (%s) GROUP BY p.rid"
                     % ",".join("?" * len(chunk)), chunk):
-                out[rid] = (str(kind or ""), len(str(tags).split(",")) if tags else 0, int(n_blocks), int(n_body))
+                out[rid] = (str(kind or ""), int(labels or 0), int(n_blocks), int(n_body))
         return out
 
     def _rerank(self, page_lex: dict[int, float], page_blocks: dict[int, list[tuple[float, int]]]
@@ -1287,7 +1289,7 @@ class Index:
         1. 길이 정규화 — 최고 block 은 두고 나머지 block 합만 page 길이(본문 block 수)로 BM25 처럼 나눈다.
            block 이 많은 page 가 질문 토큰을 여기저기 조금씩 품어 1위를 가져가지 않게 한다.
         2. type 가중 — concept·entity·synthesis 는 소스를 통합한 page 라 원본 요약보다 앞에 둔다.
-        3. hub 감점 — tag 가 HUB_TAGS 를, block 이 HUB_BLOCKS 를 넘는 page 는 목록이지 근거가 아니다.
+        3. hub 감점 — tag·keyword 가 HUB_TAGS 를, block 이 HUB_BLOCKS 를 넘는 page 는 목록이지 근거가 아니다.
         신호(raw_top 등) 는 `_lex` 의 원 점수 그대로다 — 무주입 문턱이 그 값으로 보정돼 있다.
         """
         cand = sorted(page_lex, key=lambda p: (-page_lex[p], p))[:CAND_PAGES]

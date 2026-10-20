@@ -76,7 +76,7 @@ p50 은 6 page 53 ms, 296 page 개인 위키 517 ms, 334 page 자연 세트 399 
 |---|---|---|
 | 길이 정규화 | 나머지 block 합 × 1/(1 − 0.25 + 0.25 × 본문 block 수/평균) | block 이 많은 page 가 질문 토큰을 여기저기 조금씩 품어 1위를 가져갔다 |
 | type 가중 | concept·entity·synthesis × 1.2 | 소스를 통합한 page 를 원본 요약보다 앞에 둔다 |
-| hub 감점 | tag 200개 초과 또는 block 300개 초과 × 0.5 | 목록·로그 page 는 근거가 아니라 주소다 |
+| hub 감점 | tag·keyword 합 200개 초과 또는 block 300개 초과 × 0.5 | 목록·로그 page 는 근거가 아니라 주소다 — tag 를 keywords 로 옮겨도 그대로 hub 다 |
 
 무주입 문턱이 쓰는 신호(`raw_top`·`coverage` 등)는 다시 매기기 전의 값이다. 값은 `scripts/llmwiki_eval.py`
 로 고른 것이다 — 동결 자연 세트(334 page·284 문항) 안에서 gold 주입률 0.7011 → 0.7228, 1위 비율

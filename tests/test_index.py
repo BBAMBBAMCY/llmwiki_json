@@ -691,6 +691,11 @@ class RerankTest(unittest.TestCase):
         self.assertEqual(self.ranked([gold, tagged])[0][0], "page:hub")
         tagged["tags"].append("t200")
         self.assertEqual(self.ranked([gold, tagged])[0][0], "page:gold")
+        # tag 를 keywords 로 옮긴 위키 — 목록 page 는 그대로 hub 다
+        moved = dict(tagged, tags=["t0"], keywords=[f"t{i}" for i in range(1, 201)])
+        self.assertEqual(self.ranked([gold, moved])[0][0], "page:gold")
+        moved["keywords"] = moved["keywords"][:199]
+        self.assertEqual(self.ranked([gold, moved])[0][0], "page:hub")
 
     def test_the_silence_signals_keep_their_raw_scale(self) -> None:
         pages = [make_page("short", "# Short\n\n배포 승인 절차.\n"), self.spread(3)]
