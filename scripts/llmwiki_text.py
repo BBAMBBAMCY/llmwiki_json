@@ -42,6 +42,10 @@ SECRET_RULES = (
     (re.compile(r"(?i)--?(password|passwd|token|api[_-]?key|secret|auth)\b\s+(\S+)"), 1, 2, 2),
 )
 SECRET_EXTRA = tuple(rule[0] for rule in SECRET_RULES[1:])
+# 규칙 어느 것이든 맞으려면 글에 이 조각 중 하나가 있어야 한다. 대부분의 문자열(id, 짧은 본문)은 여기서
+# 끝난다 — build 가 page 의 모든 문자열을 훑으므로 10k page 에서 1초 남짓을 아낀다.
+SECRET_TRIGGER = re.compile(r"(?i)pass|secret|token|key|connection|auth|bearer|basic|-----begin|sk-|"
+                            r"gh[pousr]_|xox[baprs]-|aiza|://")
 # `<your token>` 은 자리표시다. 값 자리에서 시작해 값을 덮어야 한다 — 뒤에 붙은 닫는 문장부호(`` ` ``·괄호·마침표)만 남아도 된다.
 PLACEHOLDER = re.compile(r"<[^<>\n]{1,200}>")
 PLACEHOLDER_TAIL = re.compile(r"[`)\]}>.,!?:;'\"*_~]*")
@@ -230,6 +234,8 @@ def redact(text: str) -> str:
     the hook can each apply it without `(접속 정보 생략) 정보 생략)` piling up.
     """
     text = CONTROL.sub("", str(text or ""))
+    if not SECRET_TRIGGER.search(text):
+        return text
     for pattern, name, value, secret in SECRET_RULES:
         def mask(match: re.Match[str]) -> str:
             if exempt(match, name, value, secret):
@@ -264,6 +270,8 @@ def secret_hit(text: str) -> str | None:
     never the secret value itself. Masked values and placeholders do not count.
     """
     text = CONTROL.sub("", str(text or ""))
+    if not SECRET_TRIGGER.search(text):
+        return None
     for pattern, name, value, secret in SECRET_RULES:
         for match in pattern.finditer(text):
             if not exempt(match, name, value, secret):
