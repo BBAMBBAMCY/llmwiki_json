@@ -68,12 +68,14 @@ VALUE_RUN = re.compile(r"[^\s,;\"'&]*")
 PLACEHOLDER = re.compile(r"<[^<>\n]{1,200}>")
 PLACEHOLDER_TAIL = re.compile(r"[`)\]}>.,!?:;'\"*_~]*")
 # token 은 거의 늘 자격증명의 이름이다(access_token, root_token, telegram_token, SecurityToken). 앞 낱말이
-# 개수·위치·문법을 말할 때만 아니다 — value_token·next_token·max_token·page_token·csrf_token 같은 JSON key.
+# 개수·위치·문법을 말할 때만 아니다 — value_token·unit_token·next_token·max_token·page_token·csrf_token 같은
+# JSON key 는 낱말 조각(수치·단위·구분자)을 가리킨다.
 PLAIN_TOKEN_QUALIFIERS = frozenset({
     "bos", "cancel", "cancellation", "char", "cls", "completion", "continuation", "count", "csrf", "cursor",
-    "end", "eos", "first", "input", "last", "lexer", "mask", "max", "min", "next", "num", "output", "pad",
-    "page", "parser", "prev", "previous", "prompt", "resume", "sep", "special", "start", "stop", "subword",
-    "sync", "total", "unk", "value", "word", "xsrf"})
+    "delimiter", "end", "eof", "eol", "eos", "first", "input", "keyword", "last", "lexer", "literal", "mask",
+    "max", "min", "newline", "next", "num", "output", "pad", "page", "parser", "prev", "previous", "prompt",
+    "punctuation", "resume", "sep", "separator", "special", "start", "stop", "subword", "symbol", "sync",
+    "total", "unit", "unk", "value", "whitespace", "word", "xsrf"})
 # 값이 이런 낱말을 품은 이름이면(`token: value_token`, `password: DB_PASSWORD`) 비밀이 아니라 key 나 변수의 이름이다.
 CREDENTIAL_WORDS = frozenset({"apikey", "credential", "credentials", "key", "passwd", "password", "secret",
                               "token"})

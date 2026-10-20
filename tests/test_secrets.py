@@ -143,6 +143,9 @@ class PlaceholderTest(WorkspaceCase):
                    "-----BEGIN PRIVATE KEY-----\n<key>\n-----END PRIVATE KEY-----",
                    "Authorization: Bearer <token>",
                    '{"value_token": "eyJ0eXAi", "next_token": "abc", "max_token": 4096}',
+                   # 수치·단위 낱말 조각을 가리키는 key
+                   '{"value_token": "AMT", "unit_token": "AMTU"}',
+                   "literal_token: STRING", "eof_token = EOF",
                    "page_token: abc123", "csrf_token=abc", "--next-token abc",
                    "token: value_token", "password: DB_PASSWORD", "secret: DB_SECRET", "api_key: settings.API_KEY",
                    # 산문 — 낱말 안의 `-token`·`-api-key` 는 CLI 플래그가 아니고, basic·bearer 뒤의 영단어는 토큰이 아니다
