@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
+from pathlib import Path
 
 from tests.support import FROZEN_DATE, WorkspaceCase, llmwiki, make_page
 
@@ -201,3 +204,67 @@ class ClassificationTest(WorkspaceCase):
         self.assertEqual(stored["tags"], ["a", "b"])
         self.assertEqual(stored["projects"], ["Sandbox Lab"])
         self.assertEqual(result["registered_groups"], ["sandbox-lab"])
+
+
+class CliOnlyWorkflowTest(WorkspaceCase):
+    """정본은 ingest·edit 로만 쓴다 — 그 둘만으로 page 의 머리와 본문을 다 바꿀 수 있어야 한다."""
+
+    DRAFT = ("---\ntype: concept\ntags: [정책, \"쉼표, 든 태그\"]\nprojects: [beta]\n"
+             "sources: [page:handbook]\nsupersedes: [old-policy]\nrelated: [beta-search]\n"
+             "raw: raw/policy-notes.md\nsummary: \"[요약] 정책의 현행판 — 'quote' 포함\"\n---\n"
+             "# Policy\n\n현행 정책 문단.\n\n대체 근거 문단.\n")
+
+    def draft(self, text: str) -> Path:
+        path = Path(tempfile.mkdtemp(prefix="llmwiki-draft-")) / "policy.md"
+        self.addCleanup(shutil.rmtree, path.parent, ignore_errors=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def stored(self) -> dict:
+        return llmwiki.find_page(self.ws, "policy")
+
+    def test_a_draft_outside_the_repo_leaves_no_machine_path_behind(self) -> None:
+        llmwiki.ingest(self.ws, self.draft("# Policy\n\n본문.\n"))
+        page = self.stored()
+        self.assertIsNone(page["raw_ref"])
+        self.assertEqual(page["history"][-1]["note"], "policy.md")
+        self.assertEqual(llmwiki.read_log(self.ws)[-1]["source"], "policy.md")
+
+    def test_frontmatter_summary_and_raw_land_on_the_page(self) -> None:
+        llmwiki.ingest(self.ws, self.draft(self.DRAFT))
+        page = self.stored()
+        self.assertEqual(page["summary"], "[요약] 정책의 현행판 — 'quote' 포함")
+        self.assertEqual(page["raw_ref"], "raw/policy-notes.md")
+        self.assertEqual(page["tags"], ["정책", "쉼표, 든 태그"])
+
+    def test_render_then_ingest_update_round_trips_the_page_head(self) -> None:
+        llmwiki.ingest(self.ws, self.draft(self.DRAFT))
+        page = self.stored()
+        anchor = page["block_order"][2]
+        sup = next(l for l in page["links"] if l["kind"] == "supersedes")
+        sup["block_id"] = anchor                                 # 옛 판이 anchor 를 달았다
+        first = page["block_order"][1]
+        page["block_aliases"] = {"block:policy:0000000000000000:1": first}
+        (self.root / "wiki" / "concepts" / "policy.json").write_text(
+            json.dumps(page, ensure_ascii=False), encoding="utf-8")
+        rendered = llmwiki.render_markdown(self.stored())
+        llmwiki.ingest(self.ws, self.draft(rendered), update=True)
+        again = self.stored()
+        for key in ("type", "tags", "projects", "sources", "raw_ref", "summary", "block_order", "blocks"):
+            self.assertEqual(again[key], page[key], key)
+        kinds = {(l["kind"], l["target"]): l.get("block_id") for l in again["links"]}
+        self.assertEqual(kinds[("supersedes", "old-policy")], anchor)
+        self.assertIn(("related", "beta-search"), kinds)
+        self.assertEqual(again["block_aliases"], {"block:policy:0000000000000000:1": first})
+
+    def test_a_block_is_appended_and_the_head_changed_without_touching_json(self) -> None:
+        llmwiki.ingest(self.ws, self.draft(self.DRAFT))
+        last = self.stored()["block_order"][-1]
+        llmwiki.edit(self.ws, "policy", last, "대체 근거 문단.\n\n새 소스가 더한 문단 [[beta-search]].")
+        rendered = llmwiki.render_markdown(self.stored()).replace("tags: [", "tags: [새태그, ", 1)
+        llmwiki.ingest(self.ws, self.draft(rendered), update=True)
+        page = self.stored()
+        self.assertEqual(page["tags"][0], "새태그")
+        self.assertIn("새 소스가 더한 문단 [[beta-search]].",
+                      [b["source_text"] for b in page["blocks"].values()])
+        self.assertEqual(llmwiki.consistency_errors(page), [])

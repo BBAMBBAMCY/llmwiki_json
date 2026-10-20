@@ -111,10 +111,29 @@ class EditTest(EditCase):
         self.assertIn(new_id, hits[0]["blocks"])
         self.assertEqual(llmwiki.stale_index(self.ws), [])
 
-    def test_a_fragment_must_be_exactly_one_block(self) -> None:
-        for fragment in ("", "한 문단.\n\n두 문단."):
-            with self.assertRaisesRegex(llmwiki.WikiError, "block 하나"):
+    def test_an_empty_fragment_deletes_nothing(self) -> None:
+        for fragment in ("", "\n\n"):
+            with self.assertRaisesRegex(llmwiki.WikiError, "지우지 않는다"):
                 llmwiki.edit(self.ws, "alpha", self.first, fragment)
+        self.assertEqual(self.stored(), self.page)
+
+    def test_a_block_appended_after_keeps_the_old_id_where_the_content_stayed(self) -> None:
+        result = llmwiki.edit(self.ws, "alpha", self.first, "첫 문단은 [[beta]] 를 본다.\n\n- 덧붙인 항목")
+        page = self.stored()
+        self.assertEqual(result["block_id"], self.first)
+        [added] = result["inserted"]
+        self.assertEqual(page["block_order"][1:3], [self.first, added])
+        self.assertEqual(page["blocks"][added]["kind"], "list")
+        self.assertNotIn("block_aliases", page)
+        self.assertEqual(llmwiki.consistency_errors(page), [])
+
+    def test_a_split_block_hands_the_old_id_to_its_first_part(self) -> None:
+        result = llmwiki.edit(self.ws, "alpha", self.first, "앞 절반 [[beta]].\n\n뒤 절반.")
+        page = self.stored()
+        first, second = page["block_order"][1:3]
+        self.assertEqual((result["block_id"], result["inserted"]), (first, [second]))
+        self.assertEqual(page["block_aliases"], {self.first: first})
+        self.assertEqual(llmwiki.resolve(self.ws, self.first)[1]["source_text"], "앞 절반 [[beta]].")
 
     def test_credentials_are_refused(self) -> None:
         with self.assertRaisesRegex(llmwiki.WikiError, "보안정보"):
@@ -149,7 +168,8 @@ class EditCliTest(EditCase):
         self.assertEqual(self.stored()["blocks"][new_id]["source_text"], "표준 입력으로.")
 
     def test_errors_exit_two(self) -> None:
-        self.cli("edit", "alpha", "--block", self.first, "--text", "a\n\nb", expect=2)
+        self.cli("edit", "alpha", "--block", self.first, "--text", "", expect=2)
+        self.cli("edit", "alpha", "--block", "block:alpha:nope", "--text", "x", expect=2)
 
 
 class AliasContextTest(EditCase):

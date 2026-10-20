@@ -665,3 +665,37 @@ class SafetyTest(RoutineCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WritePolicyTest(unittest.TestCase):
+    """정본은 ingest·edit 로만 쓴다 — 루틴이 에이전트에게 주는 지시와 권한도 그 규칙을 따른다."""
+
+    def test_the_prompts_send_the_agent_to_the_cli_not_the_json(self) -> None:
+        for prompt in (routine.INGEST_PROMPT, routine.REPAIR_PROMPT):
+            self.assertIn("직접", prompt)
+            self.assertIn("scripts/llmwiki.py", prompt)
+            self.assertNotIn("파일을 쓰는 것으로 끝내라", prompt)
+            self.assertNotIn("wiki/**/*.json 정본만 고쳐서", prompt)
+        self.assertIn("ingest", routine.INGEST_PROMPT)
+        self.assertIn("edit", routine.INGEST_PROMPT)
+        self.assertIn("repair", routine.REPAIR_PROMPT)
+
+    def test_unattended_claude_may_run_only_the_wiki_cli(self) -> None:
+        argv = routine.agent_argv("claude", "지시")
+        tools = argv[argv.index("--allowedTools") + 1:]
+        self.assertIn("Bash(python3 scripts/llmwiki.py *)", tools)
+        self.assertIn(f"Bash({sys.executable} scripts/llmwiki.py *)", tools)
+        self.assertTrue(all(tool.startswith("Bash(") and tool.endswith(" scripts/llmwiki.py *)")
+                            for tool in tools))
+        self.assertEqual(argv[:3], ["claude", "-p", "지시"])
+
+    def test_the_repo_rules_forbid_hand_written_json(self) -> None:
+        for rel in ("INIT.md", ".skills/ingest/SKILL.md", ".skills/lint/SKILL.md"):
+            text = (REPO / rel).read_text(encoding="utf-8")
+            self.assertNotIn("JSON 직접 작성으로", text, rel)
+            self.assertNotIn("JSON을 직접 쓸 때", text, rel)
+            self.assertIn("edit", text, rel)
+        for rel in ("INIT.md", ".skills/ingest/SKILL.md"):
+            text = (REPO / rel).read_text(encoding="utf-8")
+            self.assertRegex(text, r"wiki/\*\*/\*\.json`?을 직접 쓰", rel)
+            self.assertIn("ingest", text, rel)

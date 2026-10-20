@@ -18,17 +18,27 @@ export function linkKey(value: string): string {
   return text.replace(/[\s_]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+/** scripts/llmwiki.py 의 flow_list 와 같은 표기 — ingest 가 같은 항목으로 다시 읽는다. */
+const flowItem = (item: string) => (!/[,[\]"']/.test(item) ? item : item.includes('"') ? `'${item}'` : `"${item}"`);
+const flow = (items: string[]) => items.map(flowItem).join(", ");
+
 export function pageMarkdown(page: WikiPage): string {
-  const frontmatter = [
+  const rows = [
     "---",
     `type: ${page.type}`,
     `created: ${page.created}`,
     `updated: ${page.updated}`,
-    `tags: [${page.tags.join(", ")}]`,
-    `projects: [${page.projects.join(", ")}]`,
-    `sources: [${page.sources.join(", ")}]`,
-    "---",
-  ].join("\n");
+    `tags: [${flow(page.tags)}]`,
+    `projects: [${flow(page.projects)}]`,
+    `sources: [${flow(page.sources)}]`,
+  ];
+  for (const kind of ["supersedes", "related"]) {
+    const targets = [...new Set(page.links.filter((link) => link.kind === kind).map((link) => link.target))];
+    if (targets.length) rows.push(`${kind}: [${flow(targets)}]`);
+  }
+  if (page.raw_ref) rows.push(`raw: ${page.raw_ref}`);
+  if (page.summary) rows.push(`summary: "${page.summary.split(/\s+/).filter(Boolean).join(" ")}"`);
+  const frontmatter = [...rows, "---"].join("\n");
   const body = page.block_order.map((id) => page.blocks[id].source_text).join("\n\n");
   return `${frontmatter}\n\n${body}\n`;
 }

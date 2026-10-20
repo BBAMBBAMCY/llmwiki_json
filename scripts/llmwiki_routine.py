@@ -62,7 +62,9 @@ RETRY_MAX_SECONDS = 24 * 3600
 # 고쳐서 넣게 한다 — 깨진 채로 두면 그 소스는 영영 위키에 못 들어간다.
 REPAIR_PROMPT = (
     "방금 ingest 한 결과가 {stage} 에서 깨졌다. 아래가 그 출력이다:\n\n{detail}\n\n"
-    "wiki/**/*.json 정본만 고쳐서 통과하게 만들어라. tools/schema/page.schema.json 이 "
+    "정본 wiki/**/*.json 을 직접 고치지 마라. 먼저 `python3 scripts/llmwiki.py repair` 로 "
+    "판정되는 block 어긋남을 고치고, 남은 것은 `python3 scripts/llmwiki.py edit` (block) 와 "
+    "`ingest --update` (page 머리) 로 고쳐 통과하게 만들어라. tools/schema/page.schema.json 이 "
     "스키마 정본이다. raw/ 와 index/ · viewer/public/data 는 건드리지 마라 "
     "(파생물은 루틴이 다시 만든다). 고칠 수 없는 page 는 지우지 말고 무엇이 왜 "
     "안 되는지 마지막에 적어라."
@@ -72,11 +74,12 @@ REPAIR_PROMPT = (
 INGEST_PROMPT = (
     "raw/ 에 아직 위키에 들어가지 않은 소스가 있다. 저장소 규칙(CLAUDE.md / AGENTS.md)에 "
     "따라 ingest 해라: 원문을 읽고 page 를 만들거나 갱신하고, 관련 page 와 "
-    "source/entity/concept/synthesis/project 관계를 잇고, wiki/log.jsonl 에 기록해라. "
-    "page 마다 raw_ref 에 원본의 저장소 상대경로(raw/…)를 반드시 적어라 — 이 자리가 비면 "
-    "루틴은 그 소스를 아직 넣지 않은 것으로 보고 계속 다시 부른다. "
-    "build · validate 는 이 루틴이 네 뒤에 직접 돌린다. 무인 실행이라 셸 명령은 "
-    "허용되지 않을 수 있으니 파일을 쓰는 것으로 끝내라. raw/ 는 수정하지 마라. "
+    "source/entity/concept/synthesis/project 관계를 이어라. 정본 wiki/**/*.json 은 직접 "
+    "쓰지 마라 — page 는 `python3 scripts/llmwiki.py ingest` 로 만들고 block 은 "
+    "`python3 scripts/llmwiki.py edit` 로 고친다 (둘 다 wiki/log.jsonl 에 남는다). "
+    "page 마다 raw_ref 에 원본의 저장소 상대경로(raw/…)를 반드시 적어라 (frontmatter `raw:`) — "
+    "이 자리가 비면 루틴은 그 소스를 아직 넣지 않은 것으로 보고 계속 다시 부른다. "
+    "build · validate 는 이 루틴이 네 뒤에 직접 돌린다. raw/ 는 수정하지 마라. "
     "보안 정보는 저장하지 말고 '(접속 정보 생략)' 으로 치환해라. "
     "판단이 서지 않는 소스는 건너뛰고 무엇을 왜 건너뛰었는지 마지막에 적어라."
 )
@@ -450,9 +453,15 @@ def finish_leftover(root: Path, remote: str, branch: str, *, agent: str = "claud
 
 
 # --------------------------------------------------------------------------- 에이전트
+def wiki_cli_tools() -> list[str]:
+    """무인 claude 에게 여는 셸은 위키 CLI 하나다 — 정본은 ingest·edit·repair 로만 쓴다."""
+    return [f"Bash({python} scripts/llmwiki.py *)" for python in dict.fromkeys(("python3", sys.executable))]
+
+
 def agent_argv(agent: str, prompt: str) -> list[str]:
     if agent == "claude":
-        return ["claude", "-p", prompt, "--permission-mode", "acceptEdits"]
+        return ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
+                "--allowedTools", *wiki_cli_tools()]
     if agent == "codex":
         # 사용자 config 의 기본 sandbox 가 read-only 면 무인 ingest 는 한 줄도
         # 쓰지 못한 채 매번 조용히 끝난다. 쓸 수 있는 범위를 명시한다.

@@ -491,7 +491,10 @@ def page_from_markdown(ws: Workspace, path: Path, page_type: str | None = None,
                   if b["kind"] == "heading" and b["data"].get("level") == 1), slug)
     source_refs = [value if SOURCE_REF.match(value) else f"source:{value}"
                    for value in string_list(meta.get("sources"))]
-    raw_ref = norm(meta.get("raw")) or ws.rel(path)
+    raw_ref = norm(meta.get("raw")) or repo_path(ws, path)
+    meta_summary = meta.get("summary")
+    if isinstance(meta_summary, list):          # `summary: [a] b [c]` 를 flow 리스트로 읽었다
+        meta_summary = ", ".join(meta_summary)
     inferred_summary = summary_from_blocks(blocks, order)
     stamp = today()
     links = page_links(page_id, blocks, order)
@@ -504,11 +507,19 @@ def page_from_markdown(ws: Workspace, path: Path, page_type: str | None = None,
         "tags": string_list(meta.get("tags")),
         "projects": string_list(projects) or string_list(meta.get("projects")),
         "sources": source_refs, "raw_ref": raw_ref,
-        "summary": summary or inferred_summary[:280], "blocks": blocks, "block_order": order,
-        "links": links,
-        "history": [{"at": stamp, "action": "ingested", "actor": "llmwiki-cli", "note": ws.rel(path)}],
+        "summary": summary or norm(meta_summary) or inferred_summary[:280],
+        "blocks": blocks, "block_order": order, "links": links,
+        "history": [{"at": stamp, "action": "ingested", "actor": "llmwiki-cli",
+                     "note": repo_path(ws, path) or path.name}],
         "source_snapshot": {"format": "markdown", "text": text, "sha256": sha(text)},
     }
+
+
+def repo_path(ws: Workspace, path: Path) -> str | None:
+    """Repo-relative path, or None for a file outside the repository (a draft in a temp dir)
+    — a machine-local absolute path means nothing in another clone."""
+    rel = ws.rel(path)
+    return None if Path(rel).is_absolute() else rel
 
 
 # --------------------------------------------------------------------------- schema validation
@@ -1279,11 +1290,32 @@ def build(ws: Workspace, *, changed: Iterable[str] | None = None, full: bool = F
 
 
 # --------------------------------------------------------------------------- render
+def flow_list(items: Iterable[str]) -> str:
+    """`a, "b, c"` — what `split_flow` reads back as the same items."""
+    def quoted(item: str) -> str:
+        if not re.search(r"[,\[\]\"']", item):
+            return item
+        return f"'{item}'" if '"' in item else f'"{item}"'
+    return ", ".join(quoted(item) for item in items)
+
+
 def frontmatter(page: dict[str, Any]) -> list[str]:
-    return ["---", f"type: {page['type']}", f"created: {page['created']}",
-            f"updated: {page['updated']}", f"tags: [{', '.join(page['tags'])}]",
-            f"projects: [{', '.join(page['projects'])}]",
-            f"sources: [{', '.join(page['sources'])}]", "---", ""]
+    """Frontmatter `ingest` reads back as the same page head — so `render` → edit → `ingest --update`
+    is how tags, projects, sources, supersedes, related, raw and summary change."""
+    rows = ["---", f"type: {page['type']}", f"created: {page['created']}",
+            f"updated: {page['updated']}", f"tags: [{flow_list(page['tags'])}]",
+            f"projects: [{flow_list(page['projects'])}]",
+            f"sources: [{flow_list(page['sources'])}]"]
+    for kind in ("supersedes", "related"):
+        targets = list(dict.fromkeys(str(link.get("target")) for link in page.get("links") or []
+                                     if link.get("kind") == kind))
+        if targets:
+            rows.append(f"{kind}: [{flow_list(targets)}]")
+    if page.get("raw_ref"):
+        rows.append(f"raw: {page['raw_ref']}")
+    if page.get("summary"):
+        rows.append('summary: "' + " ".join(str(page["summary"]).split()) + '"')
+    return rows + ["---", ""]
 
 
 def render_markdown(page: dict[str, Any], exact: bool = False) -> str:
@@ -1581,7 +1613,7 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
         page = json.loads(text)
         if isinstance(page, list):
             raise WikiError("ingest takes a single page object, not an array")
-        page.setdefault("raw_ref", ws.rel(path))
+        page.setdefault("raw_ref", repo_path(ws, path))
         if page_type:
             page["type"] = page_type
         if projects:
@@ -1592,7 +1624,8 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
             if key in page:
                 page[key] = string_list(page[key])
         page.setdefault("history", []).append(
-            {"at": today(), "action": "ingested", "actor": "llmwiki-cli", "note": ws.rel(path)})
+            {"at": today(), "action": "ingested", "actor": "llmwiki-cli",
+             "note": repo_path(ws, path) or path.name})
     else:
         page = page_from_markdown(ws, path, page_type, projects, summary)
 
@@ -1610,12 +1643,13 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
         prior = json.loads(existing.read_text(encoding="utf-8"))
         if not isinstance(prior, dict):
             raise WikiError(f"{ws.rel(existing)} holds several pages in one file — "
-                            "edit it directly instead of ingesting over it")
+                            "change its blocks with `edit` instead of ingesting over it")
         if norm(prior.get("id")) != page["id"]:
             raise WikiError(f"{ws.rel(existing)} already holds {prior.get('id')} — "
                             f"{page['id']} would overwrite a different page")
         page["created"] = prior.get("created", page["created"])
         page["history"] = [*prior.get("history", []), *page["history"]]
+        carry_over(prior, page)
 
     registered_groups = register_project_groups(ws, page["projects"], write=not dry_run)
     # A page whose type changed belongs in the directory of its new type —
@@ -1635,13 +1669,31 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
     if sha_bytes(path.read_bytes()) != before:
         raise WikiError(f"source {ws.rel(path)} changed during ingest — raw/ must stay immutable")
     append_log(ws, {"action": "ingest", "page_id": page["id"],
-                    "source": ws.rel(path), "dest": ws.rel(dest),
+                    "source": repo_path(ws, path) or path.name, "dest": ws.rel(dest),
                     "mode": "update" if existing else "create",
                     "registered_groups": registered_groups})
     # 파생물은 build 로만 갱신한다 — 바뀐 파일만 힌트로 넘겨 색인의 그 page 행만 갈아 끼운다.
     changed = [ws.rel(dest)] + ([ws.rel(moved_from)] if moved_from else [])
     result["build"] = build(ws, changed=changed)
     return result
+
+
+def carry_over(prior: dict[str, Any], page: dict[str, Any]) -> None:
+    """What `ingest --update` keeps from the page it replaces: aliases of blocks that are
+    still there, and the block anchors of curated links the new frontmatter declares again."""
+    live = set(page["blocks"])
+    aliases = {old: new for old, new in {**(prior.get("block_aliases") or {}),
+                                         **(page.get("block_aliases") or {})}.items()
+               if new in live and old not in live}
+    if aliases:
+        page["block_aliases"] = dict(sorted(aliases.items()))
+    anchors = {(link.get("kind"), link_key(str(link.get("target") or ""))): link["block_id"]
+               for link in prior.get("links") or []
+               if link.get("kind") in ("supersedes", "related") and link.get("block_id") in live}
+    for link in page["links"]:
+        key = (link.get("kind"), link_key(str(link.get("target") or "")))
+        if not link.get("block_id") and key in anchors:
+            link["block_id"] = anchors[key]
 
 
 # --------------------------------------------------------------------------- edit
@@ -1679,31 +1731,42 @@ def relink(page: dict[str, Any], remap: dict[str, str]) -> list[dict[str, Any]]:
     return body + curated
 
 
-def swap_block(page: dict[str, Any], old_id: str, new: dict[str, Any]) -> dict[str, Any]:
-    """The page with `old_id` swapped for `new`, same position; the old id becomes an alias."""
-    new_id = new["id"]
+def swap_block(page: dict[str, Any], old_id: str, news: list[dict[str, Any]],
+               heir: str = "") -> dict[str, Any]:
+    """The page with `news` in `old_id`'s place, in order; the old id becomes an alias of `heir`
+    (the first new block unless told otherwise)."""
+    ids = [block["id"] for block in news]
+    heir = heir or ids[0]
     out = dict(page)
-    out["blocks"] = {(new_id if bid == old_id else bid): (new if bid == old_id else block)
-                     for bid, block in page["blocks"].items()}
-    out["block_order"] = [new_id if bid == old_id else bid for bid in page["block_order"]]
-    if new_id != old_id:
-        # Flat table: every older id points straight at the live one, and an id
-        # that is live again (an edit back to earlier content) is no alias.
-        aliases = {old: (new_id if live == old_id else live)
-                   for old, live in (page.get("block_aliases") or {}).items()}
-        aliases[old_id] = new_id
-        aliases.pop(new_id, None)
+    blocks: dict[str, Any] = {}
+    for bid, block in page["blocks"].items():
+        if bid == old_id:
+            blocks.update((new["id"], new) for new in news)
+        else:
+            blocks[bid] = block
+    out["blocks"] = blocks
+    out["block_order"] = [item for bid in page["block_order"] for item in (ids if bid == old_id else [bid])]
+    # Flat table: every older id points straight at the live one, and an id
+    # that is live again (an edit back to earlier content) is no alias.
+    aliases = dict(page.get("block_aliases") or {})
+    if old_id not in ids:
+        aliases = {old: (heir if live == old_id else live) for old, live in aliases.items()}
+        aliases[old_id] = heir
+    for bid in ids:
+        aliases.pop(bid, None)
+    if aliases:
         out["block_aliases"] = dict(sorted(aliases.items()))
+    else:
+        out.pop("block_aliases", None)
     return out
 
 
-def fresh_block_id(page: dict[str, Any], fingerprint: str, keep: str = "") -> str:
-    """`block:<slug>:<fingerprint>:<n>` with the smallest n no other block of the page holds."""
-    taken = set(page["blocks"]) - {keep}
+def fresh_block_id(page_id: str, fingerprint: str, taken: set[str]) -> str:
+    """`block:<slug>:<fingerprint>:<n>` with the smallest n not in `taken`."""
     occurrence = 1
-    while block_id_of(page["id"], fingerprint, occurrence) in taken:
+    while block_id_of(page_id, fingerprint, occurrence) in taken:
         occurrence += 1
-    return block_id_of(page["id"], fingerprint, occurrence)
+    return block_id_of(page_id, fingerprint, occurrence)
 
 
 def carries_fingerprint(page: dict[str, Any], block_id: str, fingerprint: str) -> bool:
@@ -1719,6 +1782,10 @@ def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
     page's wiki `links` are regenerated from the body. When the content changes
     the block takes the id of its new fingerprint; the old id stays in the
     page's `block_aliases`, so `get` keeps finding it.
+
+    A fragment of several blocks goes into the same place, in order — that is
+    how a block is split or a new one inserted after it. The old id stays with
+    the block whose content it still names, otherwise with the first one.
     """
     rel, page = find_document(ws, selector)
     old_id = live_block_id(page, norm(block))
@@ -1728,40 +1795,50 @@ def edit(ws: Workspace, selector: str, block: str, fragment: str, *,
     text = str(fragment or "").strip("\n")
     assert_no_secrets(text, label)
     parsed, order = parse_blocks(page["id"], text)
-    if len(order) != 1:
-        raise WikiError(f"{label}: edit 는 block 하나를 받는다 — 조각이 {len(order)}개 block 으로 읽혔다")
+    if not order:
+        raise WikiError(f"{label}: 조각이 비었다 — edit 는 block 을 지우지 않는다")
     old = page["blocks"][old_id]
-    new = parsed[order[0]]
-    if new["kind"] == old.get("kind") and "resolution" in old:
-        new["resolution"] = old["resolution"]   # 판정은 본문에서 나오지 않는다 — 고쳐 쓴다고 풀리지 않는다
-    if carries_fingerprint(page, old_id, new["fingerprint"]):
-        new["id"] = old_id
-    else:
-        new["id"] = fresh_block_id(page, new["fingerprint"], keep=old_id)
-    result = {"page_id": page["id"], "block_id": new["id"], "previous": old_id, "dest": rel,
-              "changed": new != old, "dry_run": dry_run}
-    if new == old:
+    news = [parsed[bid] for bid in order]
+    heir = next((new for new in news if new["fingerprint"] == old.get("fingerprint")), news[0])
+    if heir["kind"] == old.get("kind") and "resolution" in old:
+        heir["resolution"] = old["resolution"]  # 판정은 본문에서 나오지 않는다 — 고쳐 쓴다고 풀리지 않는다
+    taken = set(page["blocks"]) - {old_id}
+    heir["id"] = old_id if carries_fingerprint(page, old_id, heir["fingerprint"]) \
+        else fresh_block_id(page["id"], heir["fingerprint"], taken)
+    taken.add(heir["id"])
+    for new in news:
+        if new is not heir:
+            new["id"] = fresh_block_id(page["id"], new["fingerprint"], taken)
+            taken.add(new["id"])
+    ids = [new["id"] for new in news]
+    result: dict[str, Any] = {"page_id": page["id"], "block_id": heir["id"], "previous": old_id,
+                              "dest": rel, "changed": news != [old], "dry_run": dry_run}
+    if len(news) > 1:
+        result["inserted"] = [bid for bid in ids if bid != heir["id"]]
+    if news == [old]:
         return result
 
-    updated = swap_block(page, old_id, new)
-    updated["links"] = relink(updated, {old_id: new["id"]})
-    declared ={link_key(l.get("target", "")) for l in page.get("links") or [] if l.get("kind", "wiki") == "wiki"}
+    updated = swap_block(page, old_id, news, heir["id"])
+    updated["links"] = relink(updated, {old_id: heir["id"]})
+    declared = {link_key(l.get("target", "")) for l in page.get("links") or [] if l.get("kind", "wiki") == "wiki"}
     kept = {link_key(l["target"]) for l in updated["links"] if l["kind"] == "wiki"}
     if declared - kept:
         result["dropped_links"] = sorted(declared - kept)
     stamp = today()
     updated["updated"] = stamp
-    note = old_id if new["id"] == old_id else f"{old_id} → {new['id']}"
+    note = old_id if ids == [old_id] else f"{old_id} → {', '.join(ids)}"
     updated["history"] = [*page.get("history", []),
                           {"at": stamp, "action": "edited", "actor": "llmwiki-cli", "note": note}]
     errors = validate_page(updated, SchemaValidator.load(ws))
     if errors:
         raise WikiError("\n".join(errors))
     if dry_run:
-        result["block"] = new
+        result["block"] = heir
+        if len(news) > 1:
+            result["inserted_blocks"] = [new for new in news if new is not heir]
         return result
     write_document(ws, rel, updated)
-    append_log(ws, {"action": "edit", "page_id": page["id"], "block_id": new["id"],
+    append_log(ws, {"action": "edit", "page_id": page["id"], "block_id": heir["id"],
                     "previous": old_id, "dest": rel})
     result["build"] = build(ws, changed=[rel])
     return result
@@ -1945,8 +2022,8 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
                 undecided.append(found)
                 continue
             new["id"] = bid if carries_fingerprint(work, bid, new["fingerprint"]) \
-                else fresh_block_id(work, new["fingerprint"], keep=bid)
-            work = swap_block(work, bid, new)
+                else fresh_block_id(work["id"], new["fingerprint"], set(work["blocks"]) - {bid})
+            work = swap_block(work, bid, [new])
             if new["id"] != bid:
                 remap[bid] = new["id"]
             rederived.add(new["id"])

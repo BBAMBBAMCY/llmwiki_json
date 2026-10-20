@@ -10,6 +10,7 @@ Karpathy의 LLM Wiki 패턴을 따른다. raw source를 매 질문마다 다시 
 - 불변 원본: `raw/` (절대 수정하지 않는다)
 - 파생물: `index/*.json`, `index/search.sqlite`(검색 색인), `viewer/public/data/**`
 - 파생물은 `python3 scripts/llmwiki.py build`로만 갱신한다.
+- 정본 JSON은 손으로 쓰거나 고치지 않는다. 정본에 쓰는 명령은 `ingest`(page 생성·page 머리 갱신)와 `edit`(block)뿐이고, `repair`는 어긋난 block을 그 둘이 만드는 모양으로 되돌린다. 손으로 고친 JSON은 source_text·data·fingerprint·refs·links가 어긋나 검색·렌더·그래프가 서로 다른 말을 하고, `validate`가 error로 잡는다.
 
 ## 개발 규칙
 
@@ -35,10 +36,10 @@ Karpathy의 LLM Wiki 패턴을 따른다. raw source를 매 질문마다 다시 
 
 ### Ingest
 1. raw source를 읽는다.
-2. `scripts/llmwiki.py ingest` 또는 JSON 직접 작성으로 page를 만든다.
-3. 관련 page를 갱신하고 source/entity/concept/synthesis/project 관계를 연결한다.
-4. append-only `wiki/log.jsonl`에 기록한다.
-5. `build`, `validate`, `lint`를 실행한다.
+2. page는 `scripts/llmwiki.py ingest`로만 만든다. `wiki/**/*.json`을 직접 쓰지 않는다. 원본을 그대로 넣지 않는 요약·개념·종합 page는 frontmatter(type·tags·projects·sources·supersedes·related·raw·summary)를 갖춘 markdown 초안 `<slug>.md`를 `wiki/` 밖에 써서 ingest한다.
+3. 관련 page를 갱신하고 source/entity/concept/synthesis/project 관계를 연결한다. 있는 block은 `scripts/llmwiki.py edit <page> --block <id>`로만 고친다 — 조각이 여러 block이면 그 자리에 차례로 들어간다. page 머리는 `render <page> --format md`로 받은 markdown을 고쳐 `ingest --update`한다.
+4. ingest·edit가 append-only `wiki/log.jsonl`에 기록한다.
+5. `build`, `validate`, `lint`를 실행한다. validate가 낸 block 어긋남은 `repair`로 고치고, 판정 불가로 남은 block은 `edit`로 고친다.
 
 ### Query
 1. `index/routes.json` → `index/catalog.json` → `index/map.json` 순서로 주소를 찾는다.
@@ -46,4 +47,4 @@ Karpathy의 LLM Wiki 패턴을 따른다. raw source를 매 질문마다 다시 
 3. 모르면 `query`(또는 MCP `llmwiki_search`)를 사용한다. 검색은 `build`가 굽는 `index/search.sqlite`로 한다.
 
 ### Lint
-미판정 상충, 미존재 링크, 고아 페이지, 잘못된 source ref, 중복 ID, stale map을 점검한다. 수정은 사용자 확인 후 한다.
+미판정 상충, 미존재 링크, 고아 페이지, 잘못된 source ref, 중복 ID, stale map을 점검한다. 수정은 사용자 확인 후 `edit`·`ingest --update`·`repair`로만 한다.

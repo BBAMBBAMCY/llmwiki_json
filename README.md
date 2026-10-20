@@ -67,6 +67,18 @@ python3 scripts/llmwiki.py lint
 python3 scripts/llmwiki.py query "검색어"
 ```
 
+정본 JSON(`wiki/**/*.json`)은 손으로 쓰거나 고치지 않습니다. 손으로 고친 JSON은 source_text·data·fingerprint·refs·links가 어긋나 검색·렌더·그래프가 서로 다른 말을 하게 되고, `validate`가 error로 잡습니다. 정본에 쓰는 길은 셋입니다.
+
+```bash
+python3 scripts/llmwiki.py ingest /tmp/새-개념.md --type concept      # 새 page (frontmatter를 갖춘 markdown 초안)
+python3 scripts/llmwiki.py edit 새-개념 --block <id> --text '고친 문단.'  # block 하나 (여러 block이면 그 자리에 차례로)
+python3 scripts/llmwiki.py render 새-개념 --format md > /tmp/새-개념.md   # page 머리를 고칠 때: 받아서
+python3 scripts/llmwiki.py ingest /tmp/새-개념.md --update                #   frontmatter를 고쳐 다시 넣는다
+python3 scripts/llmwiki.py repair --dry-run                             # 이미 어긋난 block의 판정과 diff
+```
+
+저장소 밖의 초안은 경로를 남기지 않습니다(`raw_ref`가 비고 history에는 파일 이름만 남습니다) — 원본이 있으면 frontmatter `raw:`에 적습니다.
+
 ## CLI
 
 모든 명령은 `--root`(또는 `LLMWIKI_ROOT`)로 대상 저장소를 바꿀 수 있고, `build`/`validate`/`lint`/`query`/`get`/`render`/`outline`은 `--fixtures`로 데모 트리를 읽습니다.
@@ -103,9 +115,12 @@ sources:                # 근거. page:/source:/raw:/user:YYYY-MM-DD
   - user:2026-08-19
 supersedes: [옛-페이지]  # 뒤집은 주장을 지우지 않고 관계로 남긴다
 related: [beta-search]
-raw: raw/2026-08/원본.md  # 없으면 ingest 한 파일 경로
+raw: raw/2026-08/원본.md  # 없으면 ingest 한 파일 경로 (저장소 밖이면 비운다)
+summary: "한 줄 요약"     # 없으면 첫 본문 block에서 뽑는다
 ---
 ```
+
+`render <page> --format md`는 이 frontmatter를 그대로 내므로 `render` → 고치기 → `ingest --update`가 page 머리를 바꾸는 길입니다. 바뀌지 않은 block은 내용 지문이 같아 id가 그대로이고, `block_aliases`와 큐레이션 link의 block anchor도 이어집니다.
 
 `sources`·`supersedes`·`related`는 본문 `[[위키링크]]`와 같은 자격의 그래프 선이 됩니다 — 위키 밖 근거(`user:`, `raw:`)만 선이 되지 않습니다. `groups.json`이 모르는 프로젝트 값은 ingest가 새 그룹으로 등록하고, 등록 전이라도 `build`가 같은 키·같은 색으로 그룹을 만들어 줍니다.
 
@@ -185,7 +200,7 @@ python3 scripts/llmwiki_routine.py status         # 등록 상태와 마지막 �
 python3 scripts/llmwiki_routine.py run --dry-run  # 무엇을 할지만 본다
 ```
 
-한 번 돌 때의 순서는 **이월분 정리 → git pull → 미처리 확인 → ingest → build·validate → 커밋 → push**입니다. 미처리 소스가 없으면 에이전트를 아예 부르지 않습니다. **안 들어간 소스를 접는 자리는 없습니다** — 실패였든 에이전트가 건너뛴 판단이었든 남아 있는 한 최대 하루 간격으로 계속 다시 넣고, 고른 에이전트가 실패하면 다른 에이전트로 한 번 더 하며, build·validate가 깨지면 그 출력을 에이전트에게 되돌려 고치게 합니다. 지난 차례가 커밋하지 못하고 남긴 변경은 다음 차례가 이어서 마무리합니다. `raw/.llmwikiignore`로 소스가 아닌 파일을 제외할 수 있습니다. 워킹트리가 더럽거나 히스토리가 갈라졌으면 pull 단계에서 멈추고 아무것도 커밋하지 않습니다.
+한 번 돌 때의 순서는 **이월분 정리 → git pull → 미처리 확인 → ingest → build·validate → 커밋 → push**입니다. 무인 에이전트도 정본을 `ingest`·`edit`·`repair`로만 씁니다 — claude에게는 위키 CLI(`python3 scripts/llmwiki.py …`)만 셸로 열어 둡니다. 미처리 소스가 없으면 에이전트를 아예 부르지 않습니다. **안 들어간 소스를 접는 자리는 없습니다** — 실패였든 에이전트가 건너뛴 판단이었든 남아 있는 한 최대 하루 간격으로 계속 다시 넣고, 고른 에이전트가 실패하면 다른 에이전트로 한 번 더 하며, build·validate가 깨지면 그 출력을 에이전트에게 되돌려 고치게 합니다. 지난 차례가 커밋하지 못하고 남긴 변경은 다음 차례가 이어서 마무리합니다. `raw/.llmwikiignore`로 소스가 아닌 파일을 제외할 수 있습니다. 워킹트리가 더럽거나 히스토리가 갈라졌으면 pull 단계에서 멈추고 아무것도 커밋하지 않습니다.
 
 주기는 **에이전트 자신의 주기 작업**으로만 겁니다(claude면 `~/.claude/scheduled-tasks/llmwiki-ingest/`). OS 스케줄러는 쓰지 않고, 직접 써 둔 같은 이름의 작업은 덮어쓰지 않습니다. `status`는 등록 여부가 아니라 마지막 실행 시각으로 판정해, 오래 쉬었으면 `firing: false`와 종료 코드 1로 알립니다.
 
