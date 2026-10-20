@@ -72,6 +72,14 @@ class ParseBlocksTest(WorkspaceCase):
         self.assertEqual(table["data"]["rows"][0], ["컬럼", "값"])
         self.assertEqual(table["data"]["rows"][2], ["tier", "1"])
 
+    def test_an_escaped_pipe_stays_inside_its_cell(self) -> None:
+        """GFM 처럼 `\\|` 는 칸을 나누지 않는다 — 타입(`str | None`)이나 셸 파이프를 칸에 적을 수 있다."""
+        body = "| 칸 | 값 |\n| --- | --- |\n| 타입 | str \\| None |\n| 명령 | `a \\| b` |\n| 끝 | x \\| |\n"
+        blocks, order = llmwiki.parse_blocks("page:x", body)
+        rows = blocks[order[0]]["data"]["rows"]
+        self.assertEqual(rows[2:], [["타입", "str | None"], ["명령", "`a | b`"], ["끝", "x |"]])
+        self.assertEqual(llmwiki.parse_one("page:x", llmwiki.render_data("page:x", "table", blocks[order[0]]["data"]))["data"]["rows"], rows)
+
     def test_list_items_and_ordering(self) -> None:
         lists = [self.blocks[b] for b in self.order if self.blocks[b]["kind"] == "list"]
         self.assertFalse(lists[0]["data"]["ordered"])

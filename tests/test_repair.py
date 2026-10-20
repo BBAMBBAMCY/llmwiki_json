@@ -160,7 +160,7 @@ class RepairLinksAndLegacyTest(WorkspaceCase):
         self.assertEqual(llmwiki.lint(self.ws)[0], [])
 
     def test_markdown_can_be_rebuilt_for_every_parsed_kind(self) -> None:
-        body = ("# 제목\n\n문단.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n- 하나\n- 둘\n\n1. 첫\n2. 둘\n\n"
+        body = ("# 제목\n\n문단.\n\n| a | b |\n| --- | --- |\n| 1 | str \\| None |\n\n- 하나\n- 둘\n\n1. 첫\n2. 둘\n\n"
                 "```py\nprint(1)\n```\n\n> 인용\n> 둘째 줄\n\n---\n")
         blocks, order = llmwiki.parse_blocks("page:x", body)
         for bid in order:
@@ -327,3 +327,30 @@ class RepairShapeTest(WorkspaceCase):
         self.write_pages([page])
         report, _block = self.repaired()
         self.assertEqual((report["fixed"], [u["verdict"] for u in report["undecided"]]), ([], ["undecided"]))
+
+
+class RepairLegacyTableTest(WorkspaceCase):
+    """예전 파서는 칸을 `|` 로 먼저 나눠 `\\|` 가 칸을 갈랐다 — 그렇게 읽힌 data 는 다시 읽는다."""
+
+    def test_a_table_read_by_the_old_parser_is_reread(self) -> None:
+        page = make_page("tbl", "# T\n\n| 칸 | 값 |\n| --- | --- |\n| 타입 | str \\| None |\n\n[[beta]]\n")
+        bid = page["block_order"][1]
+        block = page["blocks"][bid]
+        self.assertEqual(block["data"]["rows"][2], ["타입", "str | None"])
+        block["data"] = {"rows": llmwiki.legacy_table_rows(block["source_text"])}   # 예전 파서가 쓴 그대로
+        self.assertEqual(block["data"]["rows"][2], ["타입", "str \\", "None"])
+        self.write_pages([page, make_page("beta", "# Beta\n\n[[tbl]]\n")])
+        self.assertIn(f"page:tbl:{bid}: data != parse(source_text)", llmwiki.lint(self.ws)[0])
+        report = llmwiki.repair(self.ws)
+        self.assertEqual([(f["block_id"], f["verdict"]) for f in report["fixed"]], [(bid, "parser")])
+        stored = llmwiki.find_page(self.ws, "tbl")
+        self.assertEqual(stored["block_order"][1], bid)                       # 본문이 같으니 id 도 같다
+        self.assertEqual(stored["blocks"][bid]["data"]["rows"][2], ["타입", "str | None"])
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_a_hand_written_table_that_differs_is_still_undecided(self) -> None:
+        page = make_page("tbl", "# T\n\n| 칸 | 값 |\n| --- | --- |\n| 타입 | str \\| None |\n")
+        bid = page["block_order"][1]
+        page["blocks"][bid]["data"] = {"rows": [["칸", "값"], ["---", "---"], ["타입", "int"]]}
+        self.write_pages([page])
+        self.assertEqual([u["verdict"] for u in llmwiki.repair(self.ws)["undecided"]], ["undecided"])

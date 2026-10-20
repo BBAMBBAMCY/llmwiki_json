@@ -429,6 +429,22 @@ def list_items(raw_lines: list[str]) -> list[str]:
     return items
 
 
+TABLE_PIPE = re.compile(r"(?<!\\)\|")
+
+
+def table_cells(row: str) -> list[str]:
+    """`| a | str \\| None |` → ['a', 'str | None'] — GFM 처럼 `\\|` 는 칸을 나누지 않고 칸 안의 `|` 다."""
+    row = row.strip().lstrip("|")
+    while row.endswith("|") and not row.endswith("\\|"):
+        row = row[:-1]
+    return [cell.strip().replace("\\|", "|") for cell in TABLE_PIPE.split(row)]
+
+
+def legacy_table_rows(source_text: str) -> list[list[str]]:
+    """2026-10 까지의 파서가 읽은 표 — 칸을 먼저 `|` 로 나눈 뒤 `\\|` 를 풀어서 `\\|` 가 칸을 갈랐다."""
+    return [[c.strip().replace("\\|", "|") for c in r.strip().strip("|").split("|")] for r in source_text.split("\n")]
+
+
 def parse_blocks(page_id: str, body: str) -> tuple[dict[str, Any], list[str]]:
     lines = body.splitlines()
     blocks: dict[str, Any] = {}
@@ -504,7 +520,7 @@ def parse_blocks(page_id: str, body: str) -> tuple[dict[str, Any], list[str]]:
             while i < len(lines) and lines[i].startswith("|"):
                 raw.append(lines[i])
                 i += 1
-            rows = [[c.strip().replace("\\|", "|") for c in r.strip().strip("|").split("|")] for r in raw]
+            rows = [table_cells(r) for r in raw]
             add("table", raw, {"rows": rows})
             continue
 
@@ -2196,7 +2212,8 @@ def render_data(page_id: str, kind: str, data: Any) -> str | None:
     elif kind == "table" and isinstance(data.get("rows"), list):
         rows = data["rows"]
         if all(isinstance(row, list) and all(isinstance(cell, str) for cell in row) for row in rows):
-            candidates.append("\n".join("| " + " | ".join(row) + " |" for row in rows))
+            candidates.append("\n".join("| " + " | ".join(cell.replace("|", "\\|") for cell in row) + " |"
+                                         for row in rows))
     elif kind == "code" and isinstance(text, str):
         candidates.append(f"```{data.get('language') or ''}\n{text}\n```")
     elif kind == "thematic_break":
@@ -2349,6 +2366,11 @@ def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
         out.update(diff=drift_diff(text, data, marked), verdict="marker",
                    reason=f"본문에 인용 표지가 없어 {kind} 로 다시 읽히지 않는다 — 같은 글을 표지를 붙인 인용으로 쓴다",
                    new=rebuilt_block(page, block, marked))
+        return out
+    if kind == "table" and parsed and parsed["kind"] == "table" and data == {"rows": legacy_table_rows(text)}:
+        out.update(diff=drift_diff(text, data, rendered), verdict="parser",
+                   reason="data 는 예전 파서가 이 source_text 를 읽은 그대로다 — 칸 안의 `\\|` 를 다시 읽는다",
+                   new=rebuilt_block(page, block, text))
         return out
     out["diff"] = drift_diff(text, data, rendered)
     witness = original_fingerprint(page, bid, block)
