@@ -2255,6 +2255,39 @@ def quoted_markdown(page_id: str, kind: str, text: Any) -> str | None:
     return raw if parsed and parsed["kind"] == kind and parsed["data"].get("text") == text else None
 
 
+TABLE_RULE_CELL = re.compile(r":?-+:?")
+QUOTE_MARKS = {"conflict": CONFLICT_MARK, "current": CURRENT_MARK}
+
+
+def same_content(kind: str, parsed: dict[str, Any] | None, data: Any) -> bool:
+    """손으로 쓴 data 가 source_text 와 같은 내용을 다른 모양으로 적었는가 — 구분 행(`| --- |`)을 뺀 표,
+    items 만 적은 목록. 그렇다면 source_text 에서 다시 만들어도 잃는 것이 없다."""
+    if not parsed or parsed["kind"] != kind or not isinstance(data, dict):
+        return False
+    mine = parsed["data"]
+    if kind == "table":
+        rows = list(mine["rows"])
+        if len(rows) > 1 and rows[1] and all(TABLE_RULE_CELL.fullmatch(cell.strip()) for cell in rows[1]):
+            del rows[1]
+        return set(data) == {"rows"} and data["rows"] == rows
+    if kind == "list":
+        return "items" in data and set(data) <= set(mine) and all(data[key] == mine[key] for key in data)
+    return False
+
+
+def marked_quote(page_id: str, kind: str, parsed: dict[str, Any] | None, data: Any) -> str | None:
+    """표지 없이 적힌 conflict·current — 본문이 data.text 와 같은 문단(또는 표지 없는 인용)이면 그 글에
+    kind 의 표지를 붙인 인용(`> ⚠️ 상충: …`). 그래도 같은 kind 로 다시 읽히지 않으면 None."""
+    mark = QUOTE_MARKS.get(kind)
+    text = data.get("text") if isinstance(data, dict) else None
+    if not mark or not isinstance(text, str) or mark in text or not parsed \
+            or parsed["kind"] not in ("paragraph", "quote") or parsed["data"].get("text") != text:
+        return None
+    raw = "\n".join(f"> {line}".rstrip() for line in f"{mark}: {text}".split("\n"))
+    found = parse_one(page_id, raw)
+    return raw if found and found["kind"] == kind else None
+
+
 def original_fingerprint(page: dict[str, Any], bid: str, block: dict[str, Any]) -> str:
     """block 이 마지막으로 정본에서 만들어질 때의 지문.
 
@@ -2279,6 +2312,10 @@ def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
     ingest snapshot 과 같은 쪽)을 가리고, 그 뒤의 변경이 updated·history 에 적혀 있을 때만 다른 쪽을 새것으로
     본다. 둘 다 원본 그대로인데 어긋났으면 파서가 바뀐 것이라 source_text 에서 다시 읽는다. 그 밖에는 고치지
     않는다(`new` 가 None). conflict·current 는 data 의 text 만 본문에서 나온 것으로 맞춰 본다.
+
+    판정이 필요 없는 어긋남이 둘 더 있다 — 예전 지침대로 JSON 을 손으로 쓴 page 에 흔하다. data 가 같은 내용을
+    다른 모양으로 적었으면(구분 행을 뺀 표, items 만 적은 목록) source_text 에서 다시 만들고(`shape`), 표지 없이
+    문단으로 적힌 conflict·current 는 같은 글에 표지를 붙인 인용으로 쓴다(`marker`).
     """
     problems = block_drift(page, bid, block)
     if not problems:
@@ -2300,6 +2337,18 @@ def diagnose_block(page: dict[str, Any], bid: str, block: dict[str, Any],
     if agree:
         out.update(verdict="derived", reason="source_text 와 data 는 같다 — 지문·refs·id 만 다시 만든다",
                    new=rebuilt_block(page, block, text))
+        return out
+    if same_content(kind, parsed, data):
+        out.update(diff=drift_diff(text, data, rendered), verdict="shape",
+                   reason="data 가 같은 내용을 다른 모양으로 적었다(구분 행을 뺀 표·items 만 적은 목록) — "
+                          "source_text 에서 다시 만든다",
+                   new=rebuilt_block(page, block, text))
+        return out
+    marked = marked_quote(page["id"], kind, parsed, data) if quoted else None
+    if marked is not None:
+        out.update(diff=drift_diff(text, data, marked), verdict="marker",
+                   reason=f"본문에 인용 표지가 없어 {kind} 로 다시 읽히지 않는다 — 같은 글을 표지를 붙인 인용으로 쓴다",
+                   new=rebuilt_block(page, block, marked))
         return out
     out["diff"] = drift_diff(text, data, rendered)
     witness = original_fingerprint(page, bid, block)

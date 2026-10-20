@@ -240,3 +240,90 @@ class RepairQuotedKindsTest(WorkspaceCase):
         new = stored["blocks"][stored["block_order"][1]]
         self.assertEqual((new["kind"], new["data"]["owner"]), ("open_question", "release"))
         self.assertEqual(stored["block_aliases"], {quote["id"]: new["id"]})
+
+
+class RepairShapeTest(WorkspaceCase):
+    """예전 지침대로 손으로 쓴 JSON — 같은 내용을 다른 모양으로 적었으면 판정 없이 source_text 에서 다시 만든다."""
+
+    def hand_written(self, body: str, name: str, **data: object) -> dict:
+        """`body` 의 둘째 block 을 손으로 쓴 것처럼 — 이름 붙인 id, 맞지 않는 지문, 모양이 다른 data."""
+        page = make_page("hw", body)
+        bid = page["block_order"][1]
+        block = dict(page["blocks"].pop(bid), id=f"block:hw:{name}", fingerprint=f"hand-{name}", data=dict(data))
+        page["blocks"][block["id"]] = block
+        page["block_order"][1] = block["id"]
+        for link in page["links"]:
+            if link.get("block_id") == bid:
+                link["block_id"] = block["id"]
+        self.write_pages([page])
+        return block
+
+    def repaired(self) -> tuple[dict, dict]:
+        report = llmwiki.repair(self.ws)
+        page = llmwiki.find_page(self.ws, "hw")
+        return report, page["blocks"][page["block_order"][1]]
+
+    def test_a_table_written_without_its_rule_row_is_rederived(self) -> None:
+        old = self.hand_written("# HW\n\n| 이름 | 수 |\n| :--- | ---: |\n| a | 1 |\n", "tbl",
+                                rows=[["이름", "수"], ["a", "1"]])
+        report, block = self.repaired()
+        self.assertEqual([f["verdict"] for f in report["fixed"]], ["shape"])
+        self.assertEqual(block["source_text"], old["source_text"])
+        self.assertEqual(block["data"], llmwiki.parse_one("page:hw", old["source_text"])["data"])
+        self.assertEqual(llmwiki.find_page(self.ws, "hw")["block_aliases"], {old["id"]: block["id"]})
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_a_list_written_as_items_only_is_rederived(self) -> None:
+        self.hand_written("# HW\n\n1. 하나\n2. 둘\n", "lst", items=["하나", "둘"])
+        report, block = self.repaired()
+        self.assertEqual([f["verdict"] for f in report["fixed"]], ["shape"])
+        self.assertEqual(block["data"], {"ordered": True, "items": ["하나", "둘"], "text": "1. 하나\n2. 둘"})
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_a_different_cell_or_item_is_still_undecided(self) -> None:
+        for body, data in (("# HW\n\n| 이름 | 수 |\n| --- | --- |\n| a | 1 |\n", {"rows": [["이름", "수"], ["a", "2"]]}),
+                           ("# HW\n\n| 이름 | 수 |\n| --- | --- |\n| a | 1 |\n", {"rows": [["이름", "수"], ["a", "1"]],
+                                                                               "header": ["이름", "수"]}),
+                           ("# HW\n\n- 하나\n- 둘\n", {"items": ["하나", "셋"]}),
+                           ("# HW\n\n- 하나\n- 둘\n", {"items": ["하나", "둘"], "ordered": True})):
+            with self.subTest(data=data):
+                self.hand_written(body, "x", **data)
+                report, _block = self.repaired()
+                self.assertEqual(report["fixed"], [])
+                self.assertEqual([u["verdict"] for u in report["undecided"]], ["undecided"])
+
+    def test_a_conflict_written_without_its_marker_gets_one(self) -> None:
+        text = "두 문서의 수치가 다르다 — [[beta]] 는 12, 이 문서는 15."
+        old = self.hand_written(f"# HW\n\n{text}\n", "cf", text=text, claims=["12", "15"])
+        old["kind"], old["resolution"] = "conflict", {"status": "resolved", "current": "15"}
+        page = llmwiki.find_page(self.ws, "hw")
+        page["blocks"][old["id"]] = old
+        self.write_pages([page, make_page("beta", "# Beta\n\n[[hw]]\n")])
+        report, block = self.repaired()
+        self.assertEqual([f["verdict"] for f in report["fixed"]], ["marker"])
+        self.assertEqual(block["source_text"], f"> ⚠️ 상충: {text}")
+        self.assertEqual((block["kind"], block["data"]), ("conflict", {"text": f"⚠️ 상충: {text}", "claims": ["12", "15"]}))
+        self.assertEqual(block["resolution"], {"status": "resolved", "current": "15"})
+        self.assertEqual(block["refs"], ["beta"])
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_a_current_block_written_as_a_bare_quote_gets_its_marker(self) -> None:
+        old = self.hand_written("# HW\n\n> 배포는 목요일이다.\n> 금요일은 하지 않는다.\n", "cur",
+                                text="배포는 목요일이다.\n금요일은 하지 않는다.")
+        old["kind"] = "current"
+        page = llmwiki.find_page(self.ws, "hw")
+        page["blocks"][old["id"]] = old
+        self.write_pages([page])
+        report, block = self.repaired()
+        self.assertEqual([f["verdict"] for f in report["fixed"]], ["marker"])
+        self.assertEqual(block["source_text"], "> ✅ 현행: 배포는 목요일이다.\n> 금요일은 하지 않는다.")
+        self.assertEqual(block["kind"], "current")
+
+    def test_a_bare_conflict_whose_text_differs_is_still_undecided(self) -> None:
+        old = self.hand_written("# HW\n\n두 문서의 수치가 다르다.\n", "cf", text="두 문서의 수치가 같다.")
+        old["kind"] = "conflict"
+        page = llmwiki.find_page(self.ws, "hw")
+        page["blocks"][old["id"]] = old
+        self.write_pages([page])
+        report, _block = self.repaired()
+        self.assertEqual((report["fixed"], [u["verdict"] for u in report["undecided"]]), ([], ["undecided"]))
