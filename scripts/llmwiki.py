@@ -335,6 +335,34 @@ def canonical_tags(tags: Any, spellings: dict[str, str]) -> list[str]:
     return out
 
 
+BLOCK_SCALAR = frozenset({">", "|", ">-", "|-", ">+", "|+"})
+
+
+def frontmatter_scalar(text: str, key: str) -> str | None:
+    """One frontmatter value as written — not read as a flow list (`summary: [초안] 정책 [v2]`),
+    and a `>`/`|` block scalar gathers its indented lines."""
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return None
+    lines = text[4:end].splitlines()
+    for number, line in enumerate(lines):
+        entry = META_KEY.match(line)
+        if not entry or norm(entry.group(1)) != key:
+            continue
+        value = entry.group(2).strip()
+        if value not in BLOCK_SCALAR:
+            return unquote(value)
+        gathered = []
+        for following in lines[number + 1:]:
+            if following.strip() and not following[:1].isspace():
+                break
+            gathered.append(following.strip())
+        return " ".join(part for part in gathered if part)
+    return None
+
+
 def split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Parse the YAML subset real notes use: scalars, flow lists, block sequences.
 
@@ -581,9 +609,7 @@ def page_from_markdown(ws: Workspace, path: Path, page_type: str | None = None,
     source_refs = [value if SOURCE_REF.match(value) else f"source:{value}"
                    for value in string_list(meta.get("sources"))]
     raw_ref = norm(meta.get("raw")) or repo_path(ws, path)
-    meta_summary = meta.get("summary")
-    if isinstance(meta_summary, list):          # `summary: [a] b [c]` 를 flow 리스트로 읽었다
-        meta_summary = ", ".join(meta_summary)
+    meta_summary = frontmatter_scalar(text, "summary")
     inferred_summary = summary_from_blocks(blocks, order)
     stamp = today()
     links = page_links(page_id, blocks, order)
@@ -1893,10 +1919,60 @@ def ingest(ws: Workspace, source: Path, page_type: str | None = None,
     return result
 
 
+def keep_block_ids(prior: dict[str, Any], page: dict[str, Any]) -> None:
+    """Blocks whose content the update did not change keep their old ids.
+
+    A re-parse numbers repeated content by position, so after an edit to one of
+    two equal paragraphs `…:2` would come back as `…:1`, the old id would vanish
+    and an alias would point somewhere else. Equal content takes the prior id of
+    the same fingerprint first; the rest keep theirs or get one no prior id or
+    alias holds.
+    """
+    pool: dict[str, list[str]] = {}
+    for bid in prior.get("block_order") or []:
+        block = (prior.get("blocks") or {}).get(bid)
+        fingerprint = str(block.get("fingerprint") or "") if isinstance(block, dict) else ""
+        if fingerprint and carries_fingerprint(page, bid, fingerprint):
+            pool.setdefault(fingerprint, []).append(bid)
+    order = page["block_order"]
+    assigned: dict[str, str] = {}
+    for bid in order:
+        target = next((old for old in pool.get(page["blocks"][bid]["fingerprint"], [])
+                       if old not in assigned.values()), None)
+        if target:
+            assigned[bid] = target
+    taken = set(assigned.values()) | set(prior.get("block_aliases") or {})
+    for bid in order:
+        if bid in assigned:
+            continue
+        assigned[bid] = bid if bid not in taken else fresh_block_id(page["id"], page["blocks"][bid]["fingerprint"],
+                                                                    taken | set(order))
+        taken.add(assigned[bid])
+    if all(old == new for old, new in assigned.items()):
+        return
+    page["blocks"] = {assigned[bid]: dict(page["blocks"][bid], id=assigned[bid]) for bid in order}
+    page["block_order"] = [assigned[bid] for bid in order]
+    for link in page.get("links") or []:
+        if link.get("block_id") in assigned:
+            link["block_id"] = assigned[link["block_id"]]
+
+
 def carry_over(prior: dict[str, Any], page: dict[str, Any]) -> None:
-    """What `ingest --update` keeps from the page it replaces: aliases of blocks that are
-    still there, and the block anchors of curated links the new frontmatter declares again."""
+    """What `ingest --update` keeps from the page it replaces: the ids of blocks it did not
+    change, their judgements (resolution) and body-external data (a conflict's claims),
+    aliases of blocks that are still there, and the block anchors of curated links the
+    new frontmatter declares again."""
+    keep_block_ids(prior, page)
     live = set(page["blocks"])
+    prior_blocks = prior.get("blocks") or {}
+    for bid, block in page["blocks"].items():
+        old = prior_blocks.get(bid)
+        if not isinstance(old, dict) or old.get("kind") != block.get("kind"):
+            continue
+        if "resolution" in old:
+            block["resolution"] = old["resolution"]
+        if block["kind"] in QUOTED_FREE_KINDS and isinstance(old.get("data"), dict):
+            block["data"] = dict(old["data"], text=block["data"].get("text"))
     aliases = {old: new for old, new in {**(prior.get("block_aliases") or {}),
                                          **(page.get("block_aliases") or {})}.items()
                if new in live and old not in live}

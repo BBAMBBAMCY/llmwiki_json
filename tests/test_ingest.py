@@ -268,3 +268,52 @@ class CliOnlyWorkflowTest(WorkspaceCase):
         self.assertIn("새 소스가 더한 문단 [[beta-search]].",
                       [b["source_text"] for b in page["blocks"].values()])
         self.assertEqual(llmwiki.consistency_errors(page), [])
+
+
+class UpdateContinuityTest(WorkspaceCase):
+    """`ingest --update` 는 바뀌지 않은 block 의 id·판정·본문 밖 data 를 잇는다."""
+
+    def draft(self, text: str, slug: str) -> Path:
+        path = Path(tempfile.mkdtemp(prefix="llmwiki-draft-")) / f"{slug}.md"
+        self.addCleanup(shutil.rmtree, path.parent, ignore_errors=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_repeated_content_keeps_its_ids_after_an_edit_and_a_round_trip(self) -> None:
+        llmwiki.ingest(self.ws, self.write_raw("dup.md", "# Dup\n\n같은 문단.\n\n같은 문단.\n"))
+        first, second = llmwiki.find_page(self.ws, "dup")["block_order"][1:3]
+        edited = llmwiki.edit(self.ws, "dup", first, "바뀐 문단.")["block_id"]
+        llmwiki.ingest(self.ws, self.draft(llmwiki.render_markdown(llmwiki.find_page(self.ws, "dup")), "dup"),
+                       update=True)
+        page = llmwiki.find_page(self.ws, "dup")
+        self.assertEqual(page["block_order"][1:3], [edited, second])
+        self.assertEqual(llmwiki.resolve(self.ws, second)[1]["source_text"], "같은 문단.")
+        self.assertEqual(llmwiki.resolve(self.ws, first)[1]["source_text"], "바뀐 문단.")
+        self.assertEqual(llmwiki.consistency_errors(page), [])
+
+    def test_judgements_and_claims_survive_a_head_change(self) -> None:
+        dest = self.root / llmwiki.ingest(self.ws, self.write_raw(
+            "pol.md", "# Pol\n\n> ⚠️ 상충: A 는 3, B 는 5.\n\n> ✅ 현행: 5 를 따른다.\n"))["dest"]
+        page = json.loads(dest.read_text(encoding="utf-8"))
+        conflict, current = page["block_order"][1:3]
+        page["blocks"][conflict]["resolution"] = {"status": "resolved", "current": "B", "decided_at": "2026-08-01"}
+        page["blocks"][conflict]["data"]["claims"] = ["A 기준", "B 기준"]
+        page["blocks"][current]["resolution"]["decided_at"] = "2026-08-01"
+        dest.write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
+        rendered = llmwiki.render_markdown(page).replace("tags: []", "tags: [새태그]")
+        llmwiki.ingest(self.ws, self.draft(rendered, "pol"), update=True)
+        again = llmwiki.find_page(self.ws, "pol")
+        self.assertEqual(again["tags"], ["새태그"])
+        self.assertEqual(again["blocks"][conflict]["resolution"],
+                         {"status": "resolved", "current": "B", "decided_at": "2026-08-01"})
+        self.assertEqual(again["blocks"][conflict]["data"]["claims"], ["A 기준", "B 기준"])
+        self.assertEqual(again["blocks"][current]["resolution"]["decided_at"], "2026-08-01")
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_frontmatter_summary_is_read_as_written(self) -> None:
+        cases = {"summary: [초안] 배포 정책 [v2]\n": "[초안] 배포 정책 [v2]",
+                 "summary: >\n  두 줄로\n  쓴 요약\n": "두 줄로 쓴 요약",
+                 "summary: |\n  첫 줄\n  둘째 줄\ntags: [t]\n": "첫 줄 둘째 줄"}
+        for number, (head, expected) in enumerate(cases.items()):
+            path = self.write_raw(f"s{number}.md", f"---\ntype: concept\n{head}---\n# S\n\n본문.\n")
+            self.assertEqual(llmwiki.page_from_markdown(self.ws, path)["summary"], expected, head)
