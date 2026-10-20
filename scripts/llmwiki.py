@@ -676,6 +676,9 @@ def validate_page(page: dict[str, Any], validator: SchemaValidator | None = None
         if link.get("block_id") and link["block_id"] not in blocks:
             errors.append(f"{pid}: link[{idx}] unknown block_id {link['block_id']}")
 
+    # build 가 page 를 통째로 viewer/public/data 로 복사한다 — 손으로 넣은 비밀도 여기서 막는다.
+    errors.extend(f"{pid}: 보안정보로 보이는 '{label}' 값이 {where} 에 있다 — '(접속 정보 생략)'으로 치환한다"
+                  for where, label in T.secret_paths(page))
     if validator:
         errors.extend(f"{pid}{err}" for err in validator.validate(page))
     return sorted(dict.fromkeys(errors))

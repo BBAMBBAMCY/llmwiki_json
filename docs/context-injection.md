@@ -171,7 +171,7 @@ export LLMWIKI_CONTEXT_HINT=500      # (선택) HINT ≤ 신호 < SILENCE 면 �
 | 낮은 관련도 무주입 | 정본과 한 토큰도 겹치지 않으면 무주입. 문턱은 옵션(`LLMWIKI_CONTEXT_SILENCE`, 기본 꺼짐) |
 | 색인 fail-open | 색인 없음·revision 불일치·정본이 더 새 것·sqlite 오류 전부 정본에서 만든 메모리 색인으로(같은 P/B/E). 그 build 마저 실패하면 최후 스캔으로. hit page 가 정본과 다르면 그 page 만 재독, 지워졌으면 뺀다. stats 에 `mode`(index/memory/scan)·`fallback`·`reread`·`memory_build_ms` 를 남긴다 |
 | 실행 fail-open | stdin 파싱 실패·정본 손상·예외·타임아웃 전부 stdout 없이 `exit 0`. 워치독 6초(색인 열기·메모리 색인 build 포함) |
-| 자격증명 미출력 | `api_key`/`token`/`password`/`secret`·Bearer·PEM·알려진 토큰 접두·URL 계정을 `(접속 정보 생략)` 으로 치환. 색인에 저장되는 본문도 같은 규칙으로 지운 뒤 저장한다 |
+| 자격증명 미출력 | `api_key`/`token`/`password`/`secret`·Bearer·PEM·알려진 토큰 접두·URL 계정을 `(접속 정보 생략)` 으로 치환. 색인에 저장되는 본문도 같은 규칙으로 지운 뒤 저장한다. 정본에 손으로 들어간 비밀은 `validate` error 이고 `build` 가 멈춘다 — 훅의 치환은 그 사이의 두 번째 벽이다 |
 | 낡은 주장 미출력 | supersedes 로 대체된 page 는 `sup→head` 한 줄만. 자연 세트 낡은 본문 누출 0.63 → 0.00 |
 | 전역 동작 | hook 명령이 인터프리터(`/usr/bin/python3`)와 스크립트를 절대경로로 못박는다. 어느 cwd 에서도 같은 결과 |
 | 슬래시 커맨드 | `/` 로 시작하는 프롬프트는 질문이 아니므로 건너뛴다 |

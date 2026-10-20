@@ -43,7 +43,7 @@ CORPUS = [
               summary="AlphaStd SDTM 매핑 회귀 검증용 정답지."),
     make_page("배포-메모",
               "# 배포 메모\n\n"
-              "api_key: sk-live-should-never-leak 를 설정에 넣지 말 것. 배포 절차는 수요일이다.\n",
+              "배포 키는 설정에 넣지 말 것 (접속 정보 생략). 배포 절차는 수요일이다.\n",
               type="concept", projects=["beta"], summary="배포 시 주의사항."),
     make_page("릴리스-일정",
               "# 릴리스 일정\n\n## 공장 관리자 릴리스\n\n" + LONG_TABLE,
@@ -54,6 +54,10 @@ CORPUS = [
 ]
 # 릴리스-일정 이 구판을 대체한다 (supersedes 간선은 새 page 위에 있다).
 CORPUS[3]["links"].append({"target": "릴리스-일정-v1", "label": "릴리스-일정-v1", "kind": "supersedes"})
+# 손으로 비밀을 넣은 정본. build·validate 는 이것을 거절하므로(test_secrets) 색인·훅이 두 번째 벽으로
+# 지우는지는 build 를 거치지 않는 길 — 색인을 직접 굽거나 메모리 색인 — 로 본다.
+LEAKY = make_page("키-메모", "# 키 메모\n\napi_key: sk-live-should-never-leak 를 설정에 넣지 말 것. 배포 키 회전은 금요일이다.\n",
+                  type="concept", projects=["beta"], summary="키 회전 주의사항.")
 
 
 class IndexCase(WorkspaceCase):
@@ -166,7 +170,7 @@ class BuildTest(IndexCase):
         self.assertEqual(rows["page:a"]["head"], rows["page:a"]["rid"])
 
     def test_credentials_never_reach_the_index(self) -> None:
-        self.build()
+        IDX.build([("wiki/concepts/corpus.json", p) for p in [*CORPUS, LEAKY]], self.db())
         raw = self.db().read_bytes()
         self.assertNotIn(b"sk-live-should-never-leak", raw)
         self.assertIn("(접속 정보 생략)".encode("utf-8"), raw)
@@ -305,8 +309,10 @@ class IndexedContextTest(IndexCase):
             self.assertLessEqual(ctx.est_tokens(text), max_tokens, max_tokens)
 
     def test_credentials_are_masked(self) -> None:
-        text, _, pages = self.context("배포 절차 메모 수요일")
-        self.assertTrue(pages)
+        self.write_pages([LEAKY], name="leaky.json")          # build 없이 — 메모리 색인이 정본을 바로 읽는다
+        text, result, pages = self.context("키 메모 회전 금요일")
+        self.assertEqual(result.mode, "memory")
+        self.assertIn("page:키-메모", [p["id"] for p in pages])
         self.assertNotIn("sk-live-should-never-leak", text)
         self.assertIn("(접속 정보 생략)", text)
 

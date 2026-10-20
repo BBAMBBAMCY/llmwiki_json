@@ -156,6 +156,30 @@ def secret_hit(text: str) -> str | None:
     return None
 
 
+def pointer_token(key: Any) -> str:
+    return str(key).replace("~", "~0").replace("/", "~1")
+
+
+def secret_paths(value: Any, path: str = "") -> list[tuple[str, str]]:
+    """(RFC 6901 pointer, label) for every string inside `value` that looks like a credential.
+
+    A canonical page is copied verbatim to viewer/public/data, so a credential
+    anywhere in it — body, summary, history, the ingested snapshot — leaks.
+    """
+    hits: list[tuple[str, str]] = []
+    if isinstance(value, str):
+        label = secret_hit(value)
+        if label:
+            hits.append((path or "/", label))
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            hits.extend(secret_paths(item, f"{path}/{pointer_token(key)}"))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            hits.extend(secret_paths(item, f"{path}/{index}"))
+    return hits
+
+
 def block_text(block: dict[str, Any]) -> str:
     """Search/display body: data.text/statement if present, else source_text."""
     data = block.get("data") or {}

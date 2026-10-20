@@ -244,7 +244,7 @@ python3 tools/parity/parity.py corpus    # Python↔Bun 원시 의미론 대조
 - 원문 ingest 시 `source_snapshot`을 보존해 `render --exact`로 exact Markdown round-trip을 지원한다.
 - `build`는 결정적이다 — 같은 입력이면 두 번 돌려도 바이트 단위로 같은 산출물이 나오고, 산출물에 담기는 경로는 저장소 상대 경로다. 증분 build(`--changed`)도 같은 정본의 cold build와 바이트가 같다. `python3 tools/parity/parity.py build`가 임시 저장소에서 둘 다 실제 산출물로 확인한다([docs/parity.md](docs/parity.md)).
 - index/map/graph/viewer public data와 `index/search.sqlite`는 언제든 정본에서 재생성할 수 있다.
-- 자격증명·접속정보·API 키·토큰·연결 문자열을 기록하지 않는다. ingest가 값이 붙은 형태를 발견하면 거부한다.
+- 자격증명·접속정보·API 키·토큰·연결 문자열을 기록하지 않는다. ingest·edit가 값이 붙은 형태를 발견하면 거부하고, 정본 JSON에 손으로 들어간 것은 page의 모든 문자열(본문·요약·history·원문 snapshot)을 훑는 `validate`가 error로 잡으며 `build`는 그 page가 있으면 멈춘다 — page가 통째로 `viewer/public/data`로 복사되기 때문이다.
 
 ## 라이선스
 
