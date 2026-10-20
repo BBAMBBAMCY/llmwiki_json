@@ -57,7 +57,8 @@ class RedactTest(unittest.TestCase):
     def test_named_and_bare_credentials_are_masked(self) -> None:
         self.assertIn("접속 정보 생략", llmwiki.redact("password: hunter2"))
         self.assertNotIn("hunter2", llmwiki.redact("password: hunter2"))
-        self.assertNotIn("abcdefghijklmnop", llmwiki.redact("Bearer abcdefghijklmnop"))
+        self.assertNotIn("eyJhbGciOiJIUzI1NiJ9", llmwiki.redact("Bearer eyJhbGciOiJIUzI1NiJ9"))
+        self.assertNotIn("abcdefghijklmnop", llmwiki.redact("Authorization: Bearer abcdefghijklmnop"))
         self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz0123",
                          llmwiki.redact("token sk-abcdefghijklmnopqrstuvwxyz0123"))
         self.assertIsNone(llmwiki.T.secret_hit("password 컬럼이 존재한다."))

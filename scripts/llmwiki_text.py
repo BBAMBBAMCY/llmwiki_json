@@ -30,16 +30,24 @@ SECRET_MASK = MASK
 # group, so the name, separator and quotes around it keep their shape; the
 # secret group is the part a placeholder or an earlier mask has to cover. A
 # name group means the match is a `name: value` pair, judged by its name too.
+# An auth header always carries a credential; a bare `basic`/`bearer` in prose
+# ("basic authentication", "Bearer instruments") only when the next word looks
+# like a token — a digit, `+/=`, or a case change inside it (base64, JWT).
+AUTH_HEADER = re.compile(r"(?i)\b(?:proxy-)?authorization\s*:\s*(?:bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})")
+AUTH_SCHEME = re.compile(r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})")
+TOKEN_SHAPE = re.compile(r"[0-9+/=]|[a-z][A-Z]")
 SECRET_RULES = (
     (SECRET, 1, 2, 2),
     # Values that are credentials even without a name — auth headers, PEM,
     # known token prefixes, URL userinfo, CLI flags.
-    (re.compile(r"(?i)\b(?:bearer|basic)\s+([A-Za-z0-9._\-+/=]{8,})"), 0, 1, 1),
+    (AUTH_HEADER, 0, 1, 1),
+    (AUTH_SCHEME, 0, 1, 1),
     (re.compile(r"(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----(.*?)-----END [A-Z ]*PRIVATE KEY-----)"), 0, 1, 2),
     (re.compile(r"\b(sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{16,}|"
                 r"xox[baprs]-[A-Za-z0-9\-]{10,}|AIza[A-Za-z0-9_\-]{20,})"), 0, 1, 1),
     (re.compile(r"\b[a-z][a-z0-9+.\-]*://([^\s/:@]+:([^\s/@]+))@"), 0, 1, 2),
-    (re.compile(r"(?i)--?(password|passwd|token|api[_-]?key|secret|auth)\b\s+(\S+)"), 1, 2, 2),
+    # A flag starts a word: `access-token 을`, `x-api-key 헤더`, `pre-auth 단계` are prose.
+    (re.compile(r"(?i)(?<![^\s\"'`(\[])--?(password|passwd|token|api[_-]?key|secret|auth)\b\s+(\S+)"), 1, 2, 2),
 )
 SECRET_EXTRA = tuple(rule[0] for rule in SECRET_RULES[1:])
 # 규칙 어느 것이든 맞으려면 글에 이 조각 중 하나가 있어야 한다. 대부분의 문자열(id, 짧은 본문)은 여기서
@@ -60,6 +68,9 @@ CREDENTIAL_WORDS = frozenset({"apikey", "credential", "credentials", "key", "pas
                               "token"})
 CREDENTIAL_KEY = re.compile(r"(?i)(api[_-]?key|access[_-]?token|auth[_-]?token|password|passwd|secret|"
                             r"connection[_-]?string|private[_-]?key|client[_-]?secret|token)$")
+# `block:<slug>:<16hex>:<n>` 의 꼬리. slug 가 password·access-token 처럼 자격증명 낱말로 끝나는 page 의
+# block id 는 `password:5828…:1` 로 읽힌다 — 그 page 의 build 가 멈추고 훅이 id 를 가렸다.
+BLOCK_ID_TAIL = re.compile(r"[0-9a-f]{16}:[1-9][0-9]*")
 IDENTIFIER_CHAR = re.compile(r"[A-Za-z0-9_.\-]")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_.\-]*")
 SEGMENT_BREAK = re.compile(r"[_.\-\s]+|(?<=[a-z0-9])(?=[A-Z])")
@@ -221,8 +232,12 @@ def exempt(match: re.Match[str], name: int, value: int, secret: int) -> bool:
         return True
     if placeholder_covers(text, match.start(secret), match.end(secret)):
         return True
+    if match.re is AUTH_SCHEME and not TOKEN_SHAPE.search(match.group(value)):
+        return True
     if not name:
         return False
+    if BLOCK_ID_TAIL.fullmatch(match.group(value)):
+        return True
     return key_reference(match.group(value)) or not credential_name(
         identifier_at(text, match.end(name), match.start(name)), match.group(name))
 

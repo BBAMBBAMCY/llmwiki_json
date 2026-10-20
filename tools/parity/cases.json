@@ -286,11 +286,11 @@
       "id": "regex/secret-flag",
       "kind": "regex",
       "input": {
-        "pattern": "(?i)--?(password|passwd|token|api[_-]?key|secret|auth)\\b\\s+(\\S+)",
-        "text": "--next-token abc --token <TOKEN> --password hunter2"
+        "pattern": "(?i)(?<![^\\s\\\"'`(\\[])--?(password|passwd|token|api[_-]?key|secret|auth)\\b\\s+(\\S+)",
+        "text": "--next-token abc --token <TOKEN> `--password hunter2` access-token 을"
       },
       "expect": "diverge",
-      "mitigation": "CLI 플래그 규칙. (?i) 분리. `--next-token` 처럼 앞에 낱말이 붙은 token 은 식별자 전체로 다시 가른다(credential_name)."
+      "mitigation": "CLI 플래그 규칙. (?i) 분리. 낱말 안의 `-token` 을 막는 부정 lookbehind 는 JS 도 같은 뜻이다. `--next-token` 처럼 앞에 낱말이 붙은 token 은 식별자 전체로 다시 가른다(credential_name)."
     },
     {
       "id": "regex/secret-url",
@@ -343,14 +343,24 @@
       "mitigation": "JSON key 이름 규칙. (?i) 분리. $ 는 m flag 에서 줄 끝이다 — probe 는 두 쪽 모두 m 을 켠다."
     },
     {
+      "id": "regex/secret-auth-header",
+      "kind": "regex",
+      "input": {
+        "pattern": "(?i)\\b(?:proxy-)?authorization\\s*:\\s*(?:bearer|basic)\\s+([A-Za-z0-9._\\-+/=]{8,})",
+        "text": "Authorization: Bearer abcdefghijklmnop\nProxy-Authorization: Basic dXNlcjpwYXNz"
+      },
+      "expect": "diverge",
+      "mitigation": "Authorization 헤더 규칙. (?i) 분리. 헤더 안이면 값의 모양과 상관없이 자격증명이다."
+    },
+    {
       "id": "regex/secret-bearer",
       "kind": "regex",
       "input": {
         "pattern": "(?i)\\b(?:bearer|basic)\\s+([A-Za-z0-9._\\-+/=]{8,})",
-        "text": "Authorization: Bearer abcdefghijkl / Basic <token>"
+        "text": "use Bearer eyJhbGciOiJIUzI1NiJ9 / basic authentication / Basic <token>"
       },
       "expect": "diverge",
-      "mitigation": "인증 헤더 규칙. (?i) 분리. 값 문자 집합에 < 가 없어 자리표시는 처음부터 걸리지 않는다."
+      "mitigation": "맨 문장의 인증 scheme 규칙. (?i) 분리. 토큰처럼 생기지 않은 영단어(authentication)의 면제는 정규식 밖(TOKEN_SHAPE)이다."
     },
     {
       "id": "regex/secret-prefix",

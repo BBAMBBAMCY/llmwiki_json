@@ -143,12 +143,17 @@ class PlaceholderTest(WorkspaceCase):
                    "Authorization: Bearer <token>",
                    '{"value_token": "eyJ0eXAi", "next_token": "abc", "max_token": 4096}',
                    "page_token: abc123", "csrf_token=abc", "--next-token abc",
-                   "token: value_token", "password: DB_PASSWORD", "secret: secret_name")
+                   "token: value_token", "password: DB_PASSWORD", "secret: secret_name",
+                   # 산문 — 낱말 안의 `-token`·`-api-key` 는 CLI 플래그가 아니고, basic·bearer 뒤의 영단어는 토큰이 아니다
+                   "access-token 을 발급한다", "x-api-key 헤더를 붙인다", "pre-auth 단계에서 막는다",
+                   "basic authentication is used", "Basic examples follow", "Bearer instruments")
     SECRETS = {"password: hunter2": "password", "db_password=hunter2": "db_password",
                "GITHUB_TOKEN=ghx_live_123": "GITHUB_TOKEN", "refresh_token: abc": "refresh_token",
                "refreshToken: abc": "refreshToken", "id_token: x": "id_token", "token: abc123": "token",
                '{"password": "hunter2"}': "password", "client_secret = 'zzz'": "client_secret",
                "password: <x>hunter2": "password", "postgres://admin:pa55@db/app": "credential",
+               "run (--token abc)": "token", "Basic dXNlcjpwYXNz": "credential",
+               "Proxy-Authorization: Basic abcdefghij": "credential",
                "-----BEGIN PRIVATE KEY-----\n<key>\nMIIE\n-----END PRIVATE KEY-----": "credential"}
 
     def test_placeholders_and_key_names_are_not_secrets(self) -> None:
@@ -194,3 +199,30 @@ class PlaceholderTest(WorkspaceCase):
         summary = llmwiki.page_from_markdown(self.ws, path)["summary"]
         self.assertEqual(summary, "token=<TOKEN> 은 value_token 필드에 들어간다.")
         self.assertIsNone(llmwiki.T.secret_hit(summary))
+
+
+class CredentialWordSlugTest(WorkspaceCase):
+    """slug 가 자격증명 낱말로 끝나는 page — `block:access-token:<16hex>:1` 은 비밀이 아니다."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.pages = [make_page(slug, f"# {slug}\n\n{slug} 를 다루는 문단. [[guide]]\n", tags=["t"])
+                      for slug in ("password", "access-token", "api-key")]
+        self.pages.append(make_page("guide", "# Guide\n\n[[password]] [[access-token]] [[api-key]]\n", tags=["t"]))
+        self.write_pages(self.pages)
+
+    def test_such_a_page_validates_and_builds(self) -> None:
+        for page in self.pages:
+            self.assertEqual(llmwiki.T.secret_paths(page), [], page["id"])
+        self.assertEqual(llmwiki.build(self.ws)["pages"], 4)
+        self.assertEqual(llmwiki.lint(self.ws)[0], [])
+
+    def test_its_block_ids_survive_the_hook_views(self) -> None:
+        page = self.pages[1]
+        bid = page["block_order"][1]
+        self.assertEqual(llmwiki.redact(bid), bid)
+        out = ctx.get_page(self.root, "access-token", blocks=[bid])
+        self.assertEqual([b["id"] for b in out["blocks"]], [bid])
+
+    def test_a_real_value_after_the_same_word_is_still_caught(self) -> None:
+        self.assertEqual(llmwiki.T.secret_hit("access-token: 5828861393e20db8"), "access-token")
