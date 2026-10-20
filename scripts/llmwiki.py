@@ -532,6 +532,8 @@ def page_links(page_id: str, blocks: dict[str, Any], order: list[str]) -> list[d
     links: list[dict[str, Any]] = []
     for bid in order:
         for match in WIKILINK.finditer(blocks[bid]["source_text"]):
+            if not link_key(match.group(1)):            # `[[ ]]` 는 아무 page 도 가리키지 않는다
+                continue
             links.append({"target": norm(match.group(1)),
                           "label": norm(match.group(3)) or norm(match.group(1)),
                           "anchor": norm(match.group(2)), "kind": "wiki", "block_id": bid})

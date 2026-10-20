@@ -235,3 +235,11 @@ class ParsedPagesAreConsistentTest(WorkspaceCase):
             page = {"id": "page:x", "blocks": blocks, "block_order": order,
                     "links": llmwiki.page_links("page:x", blocks, order)}
             self.assertEqual(llmwiki.consistency_errors(page), [], repr(body))
+
+    def test_an_empty_wikilink_is_no_link(self) -> None:
+        path = self.write_raw("case.md", "# Case\n\nx [[ ]] y [[_]] z [[beta]]\n")
+        page = llmwiki.page_from_markdown(self.ws, path)
+        self.assertEqual([link["target"] for link in page["links"]], ["beta"])
+        self.assertEqual(page["blocks"][page["block_order"][1]]["refs"], ["beta"])
+        self.assertEqual(llmwiki.validate_page(page, llmwiki.SchemaValidator.load(self.ws)), [])
+        self.assertEqual(llmwiki.consistency_errors(page), [])

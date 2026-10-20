@@ -128,7 +128,8 @@ def link_key(value: str) -> str:
 
 
 def refs_in(text: str) -> list[str]:
-    return sorted({norm(m.group(1)) for m in WIKILINK.finditer(text)})
+    """`[[…]]` targets in `text`. An empty one (`[[ ]]`, `[[_]]`) names no page and is no link."""
+    return sorted({norm(m.group(1)) for m in WIKILINK.finditer(text) if link_key(m.group(1))})
 
 
 def strip_ref_prefix(ref: str) -> tuple[str, str]:
