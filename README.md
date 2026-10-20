@@ -125,7 +125,7 @@ summary: "한 줄 요약"     # 없으면 첫 본문 block에서 뽑는다
 
 `render <page> --format md`는 이 frontmatter를 그대로 내므로 `render` → 고치기 → `ingest --update`가 page 머리를 바꾸는 길입니다. `updated`도 frontmatter 값 그대로 들어가니 내용을 바꿨으면 오늘 날짜로 고칩니다(`edit`는 스스로 바꿉니다). 바뀌지 않은 block은 내용 지문이 같아 id가 그대로이고, `block_aliases`와 큐레이션 link의 block anchor도 이어집니다.
 
-tag는 통제 어휘입니다. `tools/config/tags.json`(`{"tags": [...]}`, 선택)이 있으면 tag는 그 목록에서 고르고, 목록 밖의 tag는 `lint`가 경고합니다 — 목록에 없는 자유 낱말은 `keywords`로 옮깁니다. `keywords`는 검색 색인에만 들어가고 그래프 색상·범례에는 쓰이지 않습니다. 대소문자·`_ . - /`·공백만 다른 표기(`pre_v0_1-1`과 `pre-v0.1-1`)는 한 tag로 보고, ingest가 쓸 때 목록의 표기로 모으며 이미 있는 변형은 `lint`가 경고하고 `repair`가 한 표기(목록의 것, 없으면 가장 많이 쓴 것)로 모읍니다. 데모의 목록은 데모 위키의 tag뿐이니 자기 위키에서는 고쳐 쓰거나 지웁니다.
+tag는 통제 어휘입니다. `tools/config/tags.json`(`{"tags": [...]}`, 선택)이 있으면 tag는 그 목록에서 고르고, 목록 밖의 tag는 `lint`가 경고합니다 — 목록에 없는 자유 낱말은 `keywords`로 옮깁니다. `keywords`는 검색 색인에만 들어가고 그래프 색상·범례에는 쓰이지 않습니다. 대소문자·`_ . - /`·공백만 다른 표기(`pre_v0_1-1`과 `pre-v0.1-1`)는 한 tag로 보고, ingest가 쓸 때 목록의 표기로 모으며 이미 있는 변형은 `lint`가 경고하고 `repair`가 한 표기(목록의 것, 없으면 가장 많이 쓴 것)로 모읍니다. 목록이 있으면 `repair`는 목록 밖의 tag를 `keywords`로 내리고 목록에 든 keyword는 tag로 올립니다 — 목록을 고쳐 다시 돌리면 그대로 되돌아가고, 목록 안의 낱말이 하나도 없는 page는 tags를 비울 수 없어 그대로 둡니다. 데모의 목록은 데모 위키의 tag뿐이니 자기 위키에서는 고쳐 쓰거나 지웁니다.
 
 `sources`·`supersedes`·`related`는 본문 `[[위키링크]]`와 같은 자격의 그래프 선이 됩니다 — 위키 밖 근거(`user:`, `raw:`)만 선이 되지 않습니다. `groups.json`이 모르는 프로젝트 값은 ingest가 새 그룹으로 등록하고, 등록 전이라도 `build`가 같은 키·같은 색으로 그룹을 만들어 줍니다.
 

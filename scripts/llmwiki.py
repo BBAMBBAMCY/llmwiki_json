@@ -1790,6 +1790,28 @@ def compile_warnings(pages: list[dict[str, Any]], lookup: dict[str, dict[str, An
     return warnings
 
 
+def sorted_tags(page: dict[str, Any], spellings: dict[str, str],
+                allowed: set[str] | None) -> tuple[list[str], list[str]]:
+    """page 의 (tags, keywords). 표기 변형은 한 표기로 모으고, 허용 목록이 있으면 목록 안의 낱말만 tag 로
+    둔다 — 목록 밖의 tag 는 keywords 로 내리고 목록에 든 keyword 는 tag 로 올린다. 목록을 고치고 다시
+    돌리면 그대로 되돌아간다. 목록 안의 낱말이 하나도 없는 page 는 tags 를 비울 수 없어 그대로 둔다."""
+    tags = canonical_tags(page.get("tags"), spellings)
+    keywords = string_list(page.get("keywords"))
+    if allowed is None:
+        return tags, keywords
+    listed = canonical_tags([word for word in tags + keywords if tag_key(word) in allowed], spellings)
+    if not listed:
+        return tags, keywords
+    rest: list[str] = []
+    seen = {tag_key(word) for word in listed}
+    for word in keywords + tags:                       # 있던 keywords 가 앞, 내린 tag 가 뒤
+        key = tag_key(word)
+        if key and key not in seen:
+            seen.add(key)
+            rest.append(word)
+    return listed, rest
+
+
 def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None) -> list[str]:
     """한 tag 의 여러 표기, 허용 목록 밖의 tag. 목록이 없으면 표기만 본다."""
     spellings = tag_spellings(pages, vocabulary)
@@ -1802,7 +1824,7 @@ def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None) -> l
                 warnings.append(f"{page['id']}: tag '{tag}' 는 '{spellings[key]}' 의 변형이다 — repair 가 한 표기로 모은다")
             elif allowed is not None and key not in allowed:
                 warnings.append(f"{page['id']}: tag '{tag}' 가 tools/config/tags.json 에 없다 — "
-                                "목록에 더하거나 keywords 로 옮긴다")
+                                "목록에 더하거나 repair 로 keywords 에 옮긴다")
     return warnings
 
 
@@ -2447,17 +2469,30 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
     undecided: list[dict[str, Any]] = []
     pending: list[tuple[str, dict[str, Any], int]] = []
     docs = ws.load_documents()
-    spellings = tag_spellings((page for _rel, page in docs), ws.load_tag_vocabulary())
+    vocabulary = ws.load_tag_vocabulary()
+    spellings = tag_spellings((page for _rel, page in docs), vocabulary)
+    allowed = {tag_key(tag) for tag in vocabulary} if vocabulary is not None else None
     for rel, page in docs:
-        tags = canonical_tags(page.get("tags"), spellings)
+        tags, keywords = sorted_tags(page, spellings, allowed)
+        retagged = tags != page.get("tags") or keywords != string_list(page.get("keywords"))
         drifted = bool(consistency_errors(page))
-        if not drifted and tags == page.get("tags"):
+        if not drifted and not retagged:
             continue
         work, remap, rederived, count = page, {}, set(), 0
-        if tags != page.get("tags"):
-            fixed.append({"page_id": page["id"], "block_id": "", "problems": [f"tags {page.get('tags')} → {tags}"],
-                          "diff": [], "verdict": "tags", "reason": "tag 의 여러 표기를 한 표기로 모은다"})
+        if retagged:
+            moved = [word for word in keywords if word not in string_list(page.get("keywords"))]
+            raised = [word for word in tags if tag_key(word) not in {tag_key(t) for t in string_list(page.get("tags"))}]
+            problems = [f"tags {len(string_list(page.get('tags')))} → {len(tags)}: {tags[:8]}"
+                        + (" …" if len(tags) > 8 else "")]
+            if moved or raised:
+                problems.append(f"keywords 로 {len(moved)}개, tag 로 {len(raised)}개")
+            fixed.append({"page_id": page["id"], "block_id": "", "problems": problems, "diff": [], "verdict": "tags",
+                          "reason": "tag 의 여러 표기를 한 표기로 모으고, 허용 목록 밖의 tag 는 keywords 로 옮긴다"})
             work = dict(work, tags=tags)
+            if keywords:
+                work["keywords"] = keywords
+            else:
+                work.pop("keywords", None)
         snapshot, recorded = snapshot_blocks(page), change_recorded(page)
         for bid in list(page["block_order"]) if drifted else []:
             found = diagnose_block(work, bid, work["blocks"][bid], snapshot, recorded)
@@ -2488,7 +2523,9 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
             work["history"] = [*page.get("history", []),
                                {"at": today(), "action": "repaired", "actor": "llmwiki-cli",
                                 "note": f"{count} block(s) re-derived from source_text/data"
-                                        + ("; tags normalised" if work.get("tags") != page.get("tags") else "")}]
+                                        + ("; tags normalised" if work.get("tags") != page.get("tags") else "")
+                                        + ("; off-list tags moved to keywords"
+                                           if work.get("keywords") != page.get("keywords") else "")}]
             errors = validate_page(work, validator)
             if errors:
                 raise WikiError("\n".join(errors))

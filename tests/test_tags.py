@@ -47,7 +47,7 @@ class VocabularyLintTest(VocabularyCase):
         pages = [make_page("a", "# A\n\n[[b]]\n", tags=["release", "주간보고"]),
                  make_page("b", "# B\n\n[[a]]\n", tags=["review"])]
         self.assertEqual(self.warnings(pages), [
-            "page:a: tag '주간보고' 가 tools/config/tags.json 에 없다 — 목록에 더하거나 keywords 로 옮긴다"])
+            "page:a: tag '주간보고' 가 tools/config/tags.json 에 없다 — 목록에 더하거나 repair 로 keywords 에 옮긴다"])
 
     def test_a_spelling_variant_is_a_warning_with_or_without_a_list(self) -> None:
         pages = [make_page("a", "# A\n\n[[b]]\n", tags=["pre_v0_1-1"]),
@@ -96,6 +96,49 @@ class NormaliseOnWriteTest(VocabularyCase):
         self.assertEqual(page["tags"], ["pre-v0.1-1", "x"])
         self.assertEqual(page["history"][-1]["action"], "repaired")
         self.assertEqual(only(llmwiki.lint(self.ws)[1], "변형"), [])
+
+
+class VocabularyRepairTest(VocabularyCase):
+    """목록이 있으면 repair 가 tag 와 keywords 를 목록대로 나눈다 — 목록을 고쳐 다시 돌리면 되돌아간다."""
+
+    def page_tags(self, slug: str) -> tuple[list[str], list[str]]:
+        page = llmwiki.find_page(self.ws, slug)
+        return page["tags"], page.get("keywords", [])
+
+    def test_off_list_tags_move_to_keywords_and_listed_keywords_become_tags(self) -> None:
+        self.vocabulary("release", "review")
+        a = make_page("a", "# A\n\n[[b]]\n", tags=["주간보고", "Release", "2681e70"])
+        a["keywords"] = ["2분기", "review"]
+        self.write_pages([a, make_page("b", "# B\n\n[[a]]\n", tags=["review"])])
+        report = llmwiki.repair(self.ws)
+        self.assertEqual([(f["page_id"], f["verdict"]) for f in report["fixed"]], [("page:a", "tags")])
+        self.assertEqual(self.page_tags("a"), (["release", "review"], ["2분기", "주간보고", "2681e70"]))
+        self.assertEqual(llmwiki.find_page(self.ws, "a")["history"][-1]["action"], "repaired")
+        self.assertEqual(self.warnings([llmwiki.find_page(self.ws, s) for s in ("a", "b")]), [])
+        self.assertEqual(llmwiki.query(self.ws, "주간보고")[0]["id"], "page:a")      # 내린 tag 도 검색된다
+
+    def test_a_tag_put_back_on_the_list_comes_back(self) -> None:
+        self.vocabulary("release")
+        self.write_pages([make_page("a", "# A\n", tags=["release", "주간보고"])])
+        llmwiki.repair(self.ws)
+        self.assertEqual(self.page_tags("a"), (["release"], ["주간보고"]))
+        self.vocabulary("release", "주간보고")
+        llmwiki.repair(self.ws)
+        self.assertEqual(self.page_tags("a"), (["release", "주간보고"], []))
+        self.assertNotIn("keywords", llmwiki.find_page(self.ws, "a"))
+
+    def test_a_page_with_no_listed_tag_keeps_its_tags(self) -> None:
+        self.vocabulary("release")
+        self.write_pages([make_page("a", "# A\n", tags=["주간보고", "회의"])])
+        self.assertEqual(llmwiki.repair(self.ws)["fixed"], [])
+        self.assertEqual(self.page_tags("a"), (["주간보고", "회의"], []))
+
+    def test_without_a_list_keywords_stay_where_they_are(self) -> None:
+        page = make_page("a", "# A\n", tags=["x"])
+        page["keywords"] = ["y"]
+        self.write_pages([page])
+        self.assertEqual(llmwiki.repair(self.ws)["fixed"], [])
+        self.assertEqual(self.page_tags("a"), (["x"], ["y"]))
 
 
 class KeywordsTest(WorkspaceCase):
