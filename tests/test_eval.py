@@ -59,6 +59,14 @@ class EvalTest(WorkspaceCase):
         report = json.loads(proc.stdout)
         self.assertEqual((report["pages"], report["gold_injected"], report["unrelated_bytes_mean"]), (2, 1.0, 0.0))
 
+    def test_the_silence_threshold_can_be_measured(self) -> None:
+        rows = [{"q": "릴리스는 무슨 요일에 나가나", "gold_slug": "릴리스"}, {"q": "릴리스 검토자 요일"}]
+        off = ev.evaluate(self.root, ev.load_questions(self.questions(rows)))
+        on = ev.evaluate(self.root, ev.load_questions(self.questions(rows)), silence_t=1e9)
+        self.assertEqual((off["silence"], on["silence"]), (0.0, 1e9))
+        self.assertGreater(off["unrelated_bytes_mean"], 0)
+        self.assertEqual((on["unrelated_bytes_mean"], on["unrelated_silent"], on["gold_injected"]), (0.0, 1.0, 0.0))
+
     def test_injected_pages_are_read_from_the_body_lines(self) -> None:
         text = "<llmwiki-context v=3>\nP a concept\nB a#x:1 cur | 본문\nE a#x:1 related→b\nP old concept sup→a\nB c#y:1 cur | 셋\n"
         self.assertEqual(ev.injected_slugs(text), ["a", "c"])
@@ -80,8 +88,9 @@ class DemoSetTest(WorkspaceCase):
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         report = json.loads(proc.stdout)
-        self.assertEqual(set(report), {"root", "pages", "max_bytes", "questions", "answerable", "unrelated",
-                                       "gold_injected", "top1", "unrelated_bytes_mean"})
+        self.assertEqual(set(report), {"root", "pages", "max_bytes", "silence", "hint", "questions", "answerable",
+                                       "unrelated", "gold_injected", "top1", "unrelated_bytes_mean",
+                                       "unrelated_silent"})
         self.assertGreaterEqual(report["gold_injected"], 0.8)
         proc = subprocess.run([sys.executable, str(EVAL_SCRIPT), str(DEMO_QUESTIONS), "--root", str(REPO)],
                               capture_output=True, text=True)

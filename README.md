@@ -229,9 +229,10 @@ git push private HEAD:main                                            # 위키�
 ```bash
 python3 scripts/llmwiki_eval.py tools/eval/demo-questions.json                  # 데모 위키
 python3 scripts/llmwiki_eval.py 내-질문.json --root ~/my-wiki --json --details   # 자기 위키
+python3 scripts/llmwiki_eval.py 내-질문.json --root ~/my-wiki --silence 770      # 무주입 문턱을 켰을 때
 ```
 
-입력은 `[{"q": "질문", "gold_slug": "slug"}]` 배열이고, `gold_slug`가 null이면 위키와 무관한 질문입니다(목록이면 그중 하나면 맞습니다). 출력은 셋입니다 — **gold 주입률**(gold page의 본문 block이 주입된 비율), **1위 비율**(검색 1위가 gold인 비율), **무관 질문의 평균 주입 바이트**. 정본에서 메모리 색인을 한 번 굽고 훅의 메모리 경로와 같은 검색·투영·렌더를 돌며, 아무것도 쓰지 않습니다. 저장소에는 데모 질문만 둡니다 — 자기 위키의 질문 세트는 그 위키 쪽에 둡니다.
+입력은 `[{"q": "질문", "gold_slug": "slug"}]` 배열이고, `gold_slug`가 null이면 위키와 무관한 질문입니다(목록이면 그중 하나면 맞습니다). 출력은 셋입니다 — **gold 주입률**(gold page의 본문 block이 주입된 비율), **1위 비율**(검색 1위가 gold인 비율), **무관 질문의 평균 주입 바이트**(무주입 비율도 함께). 무주입 문턱은 훅처럼 기본 꺼짐이고 `--silence`·`--hint`로 켜서 같은 질문 세트로 득실을 잽니다. 정본에서 메모리 색인을 한 번 굽고 훅의 메모리 경로와 같은 검색·투영·렌더를 돌며, 아무것도 쓰지 않습니다. 저장소에는 데모 질문만 둡니다 — 자기 위키의 질문 세트는 그 위키 쪽에 둡니다.
 
 ## 테스트
 
