@@ -287,9 +287,11 @@ class InstallerCase(unittest.TestCase):
 
     def run_installer(self, *argv: str, expect: int = 0,
                       **env: str) -> subprocess.CompletedProcess[str]:
+        # stdin 은 닫는다 — 터미널에서 시험을 돌리면 install.sh 가 `[ -t 0 ]` 로 대화형이 되어 루틴을
+        # 물으며 입력을 기다린다(시험이 거기서 멈췄다)
         proc = subprocess.run([str(self.clone / "scripts" / "install.sh"), *argv],
                               capture_output=True, text=True, env=self.env(**env),
-                              cwd=str(self.tmp))
+                              cwd=str(self.tmp), stdin=subprocess.DEVNULL)
         self.assertEqual(proc.returncode, expect,
                          f"argv={argv}\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return proc
@@ -366,7 +368,7 @@ class PathResolutionTest(InstallerCase):
         link = self.tmp / "install-link"
         link.symlink_to(self.clone / "scripts" / "install.sh")
         proc = subprocess.run([str(link), "doctor", "-q"], capture_output=True, text=True,
-                              env=self.env(), cwd="/")
+                              env=self.env(), cwd="/", stdin=subprocess.DEVNULL)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout)["root"], str(self.clone))
 
@@ -852,7 +854,7 @@ class PythonBootstrapTest(BootstrapCase):
         proc = subprocess.run(
             [str(self.clone / "scripts" / "install.sh"), "install", "--codex", "--claude",
              "--no-mcp", "--no-bun", "-q"],
-            capture_output=True, text=True, cwd=str(self.tmp),
+            capture_output=True, text=True, cwd=str(self.tmp), stdin=subprocess.DEVNULL,
             env=self.env(PATH=os.pathsep.join([str(self.bin), str(path_without_curl)]),
                          FAKE_UV_INSTALLS_PYTHON="1", **self.no_system_python()))
         self.assertEqual(proc.returncode, 0, proc.stderr)
