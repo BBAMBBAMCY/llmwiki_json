@@ -74,6 +74,9 @@ $GhCreate        = ''
 $Private         = 'ask'
 $Ask             = $true
 $RemoteName      = 'private'
+# 데이터 repo (두 repo 운영). 비우면 shim 이 기록한 것, 그것도 없으면 이 저장소(단일 repo)다.
+$DataOpt         = ''
+$Data            = ''
 $Quiet        = $false
 
 # 부트스트랩 대상은 Python(uv) 과 viewer 가 쓰는 Bun 이다. 저장소 규칙상
@@ -101,6 +104,8 @@ llmwiki_json 자동 컨텍스트 주입 설치 (Windows)
   verify      설치 상태를 점검한다. 아무것도 바꾸지 않는다.
   uninstall   이 스크립트가 넣은 것만 되돌린다. 남의 설정은 남긴다.
   doctor      감지 결과와 해석된 경로만 출력한다.
+  update      코드 repo 를 받아(ff-only) 데이터 repo 를 맞춘다 — llmwiki update 와 같다
+              (migrate · 지침 · build/validate/lint · lock · 데이터 repo 커밋)
 
 옵션 (POSIX 쪽 --옵션 과 PowerShell 식 -옵션 을 모두 받는다)
   -n, -DryRun         바뀔 내용만 보여주고 아무것도 쓰지 않는다 (네트워크도 안 탄다)
@@ -116,6 +121,8 @@ llmwiki_json 자동 컨텍스트 주입 설치 (Windows)
       -Python P       쓸 인터프리터 절대경로 — 자동 선택보다 항상 우선한다
       -McpName N      MCP 서버 이름 (기본 llmwiki)
       -QmdName N      (옛 옵션, 무시된다)
+      -Data DIR       데이터 repo (llmwiki init/adopt 로 만든 것). hook · MCP 에 LLMWIKI_ROOT 로,
+                      llmwiki shim 에 기본 데이터로 기록한다
       -Force          미지원 OS 나 미감지 클라이언트에서도 강행한다
   -q, -Quiet          진행 로그를 줄인다
   -h, -Help           이 도움말
@@ -123,7 +130,7 @@ llmwiki_json 자동 컨텍스트 주입 설치 (Windows)
 주기 ingest 루틴 — raw\ 에 새 소스가 들어오면 에이전트가 위키에 넣는다
       --ingest-routine C  C 는 claude · codex · none. 주지 않으면 설치 중에 물어본다
       --routine-interval S  주기(초, 기본 3600)
-  -y, --yes           대화형 질문을 하지 않는다 (지정하지 않은 것은 건너뛴다)
+  -y, --yes           대화형 질문을 하지 않는다 (지정하지 않은 것은 건너뛴다, update 는 확인 없이 migrate)
 
 개인 저장소 — 이 clone 은 update 용으로 두고, 위키는 자기 private 저장소로 민다
       --private-remote URL  이미 만들어 둔 private 저장소를 remote 로 붙인다
@@ -181,6 +188,9 @@ while ($i -lt $argv.Count) {
                                               $McpName = $value; $i++ }
         '^(--qmd-name|-QmdName)$'             { if (-not $value) { [Console]::Error.WriteLine("error: $a 에 값이 필요하다"); exit 2 }
                                               $LegacyQmdFlag = $true; $i++ }
+        '^(--data|-Data)$'                    { if (-not $value) { [Console]::Error.WriteLine("error: $a 에 데이터 repo 경로가 필요하다"); exit 2 }
+                                              $DataOpt = $value; $i++ }
+        '^--data=(.+)$'                       { $DataOpt = $Matches[1] }
         '^(--force|-Force)$'                  { $Force = $true }
         '^(--ingest-routine|-IngestRoutine)$' { if (-not $value) { [Console]::Error.WriteLine("error: $a 에 값이 필요하다"); exit 2 }
                                               $Routine = $value; $i++ }
@@ -249,8 +259,9 @@ if (-not $OnWindows) {
 if (-not (Test-Path -LiteralPath $ContextCli -PathType Leaf)) {
     Die "$ContextCli 가 없다 — 저장소 안에서 실행하라"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'wiki') -PathType Container)) {
-    Die "$RepoRoot\wiki 가 없다 — repo root 해석 실패"
+# 코드 repo 에 위키가 없어도 된다(두 repo 운영) — 있어야 하는 것은 CLI 다.
+if (-not (Test-Path -LiteralPath $WikiCli -PathType Leaf)) {
+    Die "$WikiCli 가 없다 — repo root 해석 실패"
 }
 
 # --------------------------------------------------------------- 부트스트랩
@@ -488,7 +499,9 @@ if (-not $WantCodex -and -not $WantClaude) {
 function Invoke-Context {
     # 공백 있는 인터프리터 경로가 깨지지 않게 배열로만 넘긴다.
     param([string[]]$Arguments)
-    $all = @($ContextCli) + $Arguments
+    $all = @($ContextCli)
+    if ($script:Data) { $all += @('--root', $script:Data) }
+    $all += $Arguments
     if ($WantCodex)  { $all += @('--client', 'codex') }
     if ($WantClaude) { $all += @('--client', 'claude') }
     if ($script:Py)  { $all += @('--python', $script:Py) }
@@ -511,6 +524,7 @@ function Show-Detection {
     Write-Host ("  os              {0}" -f $OsLabel)
     Write-Host ("  powershell      {0}" -f $PSVersionTable.PSVersion)
     Write-Host ("  repo root       {0}" -f $RepoRoot)
+    Write-Host ("  데이터 root     {0}" -f $(if ($script:Data) { $script:Data } else { "$RepoRoot (단일 repo)" }))
     Write-Host ("  부트스트랩      {0}" -f $(if ($Bootstrap) { '허용' } else { '금지 (-NoBootstrap)' }))
     Write-Host ("  python          {0}  [{1}, {2}]" -f $(if ($Py) { $Py } else { '없음' }), $PyVersion, $PySource)
     if (Resolve-Uv) {
@@ -611,11 +625,25 @@ function Test-McpPointsAt([string]$Client, [string]$Name, [string]$Needle) {
 }
 
 function Add-Mcp([string]$Client, [string]$Name, [string]$PyPath, [string]$ScriptPath) {
-    $a = switch ($Client) {
-        'claude' { @('mcp', 'add', '--scope', 'user', $Name, '--', $PyPath, $ScriptPath, 'mcp') }
-        'codex'  { @('mcp', 'add', $Name, '--', $PyPath, $ScriptPath, 'mcp') }
+    # 데이터 repo 가 있으면 LLMWIKI_ROOT 를 함께 기록한다 (install.sh 의 mcp_add 와 같다)
+    if ($script:Data) {
+        $a = switch ($Client) {
+            'claude' { @('mcp', 'add', '--scope', 'user', '-e', "LLMWIKI_ROOT=$($script:Data)", $Name, '--', $PyPath, $ScriptPath, 'mcp') }
+            'codex'  { @('mcp', 'add', $Name, '--env', "LLMWIKI_ROOT=$($script:Data)", '--', $PyPath, $ScriptPath, 'mcp') }
+        }
+    } else {
+        $a = switch ($Client) {
+            'claude' { @('mcp', 'add', '--scope', 'user', $Name, '--', $PyPath, $ScriptPath, 'mcp') }
+            'codex'  { @('mcp', 'add', $Name, '--', $PyPath, $ScriptPath, 'mcp') }
+        }
     }
     return (Invoke-Quiet $Client $a).Ok
+}
+
+function Test-McpDataCurrent([string]$Client, [string]$Name) {
+    # 등록이 지금 데이터 root 를 가리키는가 (데이터가 없으면 언제나 참)
+    if (-not $script:Data) { return $true }
+    return (Test-McpPointsAt $Client $Name "LLMWIKI_ROOT=$($script:Data)")
 }
 
 function Remove-Mcp([string]$Client, [string]$Name) {
@@ -641,13 +669,13 @@ function Install-McpFor([string]$Client, [string]$PyPath) {
         return
     }
     if (Test-McpPointsAt $Client $McpName $ContextCli) {
-        if (Test-McpPointsAt $Client $McpName $PyPath) {
+        if ((Test-McpPointsAt $Client $McpName $PyPath) -and (Test-McpDataCurrent $Client $McpName)) {
             Say "  ${Client}: 이미 우리 것 — 그대로 둔다"
             if (-not $DryRun) { Set-McpState $Client $McpName $ContextCli }
             return
         }
         # 우리 서버가 맞는데 인터프리터가 바뀌었다. hook 과 같은 것을 쓰게 맞춘다.
-        if ($DryRun) { Plan "$Client mcp remove/add $McpName — 인터프리터를 $PyPath 로 맞춘다"; return }
+        if ($DryRun) { Plan "$Client mcp remove/add $McpName — 인터프리터 $PyPath · 데이터 $(if ($script:Data) { $script:Data } else { '(이 저장소)' }) 로 맞춘다"; return }
         Remove-Mcp $Client $McpName | Out-Null
         if (Add-Mcp $Client $McpName $PyPath $ContextCli) {
             Set-McpState $Client $McpName $ContextCli
@@ -782,7 +810,7 @@ function Install-Routine {
         Warn "$RoutineCli 가 없다 — 루틴을 건너뛴다"
         return
     }
-    $argv = @($RoutineCli, '--root', $RepoRoot, 'install', '--agent', $script:Routine,
+    $argv = @($RoutineCli, '--root', $(if ($script:Data) { $script:Data } else { $RepoRoot }), 'install', '--agent', $script:Routine,
               '--interval', [string]$RoutineInterval, '--python', $Py, '--remote', $RemoteName)
     if ($DryRun) { $argv += '--dry-run' }
     & $Py @argv
@@ -832,7 +860,7 @@ function Install-PrivateRemote {
         Warn "$RoutineCli 가 없다 — 건너뛴다"
         return
     }
-    $argv = @($RoutineCli, '--root', $RepoRoot, 'git-setup', '--remote', $RemoteName)
+    $argv = @($RoutineCli, '--root', $(if ($script:Data) { $script:Data } else { $RepoRoot }), 'git-setup', '--remote', $RemoteName)
     if ($script:PrivateUrl) { $argv += @('--url', $script:PrivateUrl) }
     if ($script:GhCreate)   { $argv += @('--gh-create', $script:GhCreate) }
     if ($DryRun)            { $argv += '--dry-run' }
@@ -840,36 +868,43 @@ function Install-PrivateRemote {
     if ($LASTEXITCODE -ne 0) { Warn '개인 저장소 연결에 실패했다 — 나머지 설치는 그대로다' }
 }
 
+# --------------------------------------------------------------- llmwiki shim · 데이터 repo 지침
+function Install-Shim {
+    Step 'llmwiki 명령 (shim)'
+    $a = @($WikiCli, 'shim', 'install', '--python', $Py)
+    if ($script:Data) { $a += @('--data', $script:Data) }
+    if ($DryRun) { $a += '--dry-run' }
+    & $Py @a
+    if ($LASTEXITCODE -ne 0) { Warn '같은 이름의 llmwiki 가 이미 있다 — 그대로 둔다' }
+}
+
+function Uninstall-Shim {
+    Step 'llmwiki 명령 (shim) 제거'
+    $a = @($WikiCli, 'shim', 'remove')
+    if ($DryRun) { $a += '--dry-run' }
+    & $Py @a
+    if ($LASTEXITCODE -ne 0) { Warn 'llmwiki 는 우리가 만든 것이 아니다 — 그대로 둔다' }
+}
+
+function Install-DataGuides {
+    if (-not $script:Data) { return }
+    if (-not (Test-Path -LiteralPath (Join-Path $script:Data 'llmwiki.lock') -PathType Leaf)) { return }
+    Step '데이터 repo 지침 (CLAUDE.md · AGENTS.md · skills)'
+    $a = @($WikiCli, '--root', $script:Data, 'guides')
+    if ($DryRun) { $a += '--dry-run' }
+    if ($Quiet) { & $Py @a | Out-Null } else { & $Py @a }
+}
+
 # --------------------------------------------------------------- update
+# llmwiki update · install.sh update 와 같은 Python 구현(llmwiki.py update)을 부른다.
 function Invoke-Update {
-    Step 'upstream 갱신 (origin)'
-    if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot '.git'))) {
-        Die "git 저장소가 아니다: $RepoRoot"
-    }
-    $dirty = & git -C $RepoRoot status --porcelain
-    if ($dirty) {
-        Warn '커밋되지 않은 변경이 있다 — 먼저 정리하라'
-        $dirty | Select-Object -First 5 | ForEach-Object { Say "    $_" }
-        exit 1
-    }
-    & git -C $RepoRoot remote get-url origin 2>$null | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        Warn "remote 'origin' 이 없다 — 이 clone 은 upstream 을 가리키고 있지 않다"
-        Warn "  붙이려면: git -C $RepoRoot remote add origin <upstream 주소>"
-        exit 1
-    }
-    $branch = (& git -C $RepoRoot rev-parse --abbrev-ref HEAD).Trim()
-    if ($DryRun) { Plan "git fetch origin && git merge --ff-only origin/$branch"; return }
-    & git -C $RepoRoot fetch origin $branch
-    if ($LASTEXITCODE -ne 0) { exit 1 }
-    & git -C $RepoRoot merge --ff-only "origin/$branch"
-    if ($LASTEXITCODE -ne 0) {
-        Warn 'ff-only 로 합칠 수 없다 (갈라졌다). 직접 확인하라:'
-        Warn "  git -C $RepoRoot log --oneline HEAD..origin/$branch"
-        exit 1
-    }
-    Say '  최신으로 맞췄다'
-    Say "  개인 위키를 밀어 올리려면: git push $RemoteName HEAD:$branch"
+    Step '갱신 (코드 repo pull → 데이터 repo 맞춤)'
+    $a = @($WikiCli, 'update')
+    if ($script:Data) { $a += @('--data', $script:Data) }
+    if (-not $Ask) { $a += '--yes' }
+    if ($DryRun) { $a += '--dry-run' }
+    & $Py @a
+    exit $LASTEXITCODE
 }
 
 $AllowToolInstall = ($Command -eq 'install')
@@ -878,6 +913,15 @@ try {
     # 인터프리터를 먼저 확정한다. 설정 파일을 쓰기 전에 필요한 도구를 전부
     # 마련해 두어야, 중간에 실패해도 남의 설정이 반쯤 바뀐 채로 남지 않는다.
     Resolve-Python
+
+    # 데이터 root: -Data 가 우선, 없으면 shim 이 기록해 둔 것 (install 이 -Data 로 놓았다).
+    if ($DataOpt) {
+        if (-not (Test-Path -LiteralPath $DataOpt -PathType Container)) { Die "-Data $DataOpt 가 없다 — 먼저 llmwiki init 이나 adopt 로 만든다" }
+        $script:Data = Convert-Path -LiteralPath $DataOpt
+    } elseif ($Py -and $Command -ne 'install') {
+        $found = (Invoke-Quiet $Py @($WikiCli, 'shim', 'status', '--field', 'data')).Output
+        if ($found) { $script:Data = ([string]$found).Trim() }
+    }
 
     switch ($Command) {
         'update' {
@@ -900,7 +944,7 @@ try {
             Invoke-Context @('verify')
             if (Test-Path -LiteralPath $RoutineCli -PathType Leaf) {
                 Step '주기 ingest 루틴'
-                & $Py $RoutineCli --root $RepoRoot status
+                & $Py $RoutineCli --root $(if ($script:Data) { $script:Data } else { $RepoRoot }) status
             }
         }
         'install' {
@@ -918,6 +962,8 @@ try {
             }
             Install-Hooks
             Install-Mcp
+            Install-Shim
+            Install-DataGuides
             Install-PrivateRemote
             Install-Routine
             if ($DryRun) { Step 'dry-run 종료 — 아무것도 바꾸지 않았다'; exit 0 }
@@ -926,13 +972,14 @@ try {
             try { Invoke-Context @('verify') } catch { }
             Step '완료'
             Say "  되돌리려면:  $ScriptDir\install.ps1 uninstall"
-            Say "  코드 갱신:   $ScriptDir\install.ps1 update   (origin 에서 받아 온다)"
+            Say "  코드 갱신:   llmwiki update   (= $ScriptDir\install.ps1 update)"
         }
         'uninstall' {
             Show-Detection
             if (-not $Py) { Die 'Python 3.9 이상이 없어 제거를 실행할 수 없다' }
             Uninstall-Hooks
             Uninstall-Mcp
+            Uninstall-Shim
             Uninstall-Routine
             Step '받아 온 도구'
             Warn "받아 온 도구(uv/Bun)는 자동으로 지우지 않는다 — $UvDir, $BunDir"

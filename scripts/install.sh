@@ -66,6 +66,9 @@ GH_CREATE=""
 PRIVATE=ask
 ASK=1
 REMOTE_NAME=private
+# 데이터 repo (두 repo 운영). 비우면 shim 이 기록한 것, 그것도 없으면 이 저장소(단일 repo)다.
+DATA_OPT=""
+DATA=""
 
 # 부트스트랩 대상은 Python(uv) 과 viewer 가 쓰는 Bun 이다. 저장소 규칙상
 # package manager 는 Bun 뿐이고 버전은 고정이다 (npm/yarn/pnpm 금지). qmd 는
@@ -96,7 +99,8 @@ llmwiki_json 자동 컨텍스트 주입 설치
   verify      설치 상태를 점검한다. 아무것도 바꾸지 않는다.
   uninstall   이 스크립트가 넣은 것만 되돌린다. 남의 설정은 남긴다.
   doctor      감지 결과와 해석된 경로만 출력한다.
-  update      upstream(origin) 에서 코드 갱신만 받아 온다. 개인 위키는 건드리지 않는다.
+  update      코드 repo 를 받아(ff-only) 데이터 repo 를 맞춘다 — llmwiki update 와 같다
+              (migrate · 지침 · build/validate/lint · lock · 데이터 repo 커밋)
 
 옵션
   -n, --dry-run       바뀔 내용만 보여주고 아무것도 쓰지 않는다 (네트워크도 안 탄다)
@@ -112,6 +116,8 @@ llmwiki_json 자동 컨텍스트 주입 설치
       --python P      쓸 인터프리터 절대경로 — 자동 선택보다 항상 우선한다
       --mcp-name N    MCP 서버 이름 (기본 llmwiki)
       --qmd-name N    (옛 옵션, 무시된다)
+      --data DIR      데이터 repo (llmwiki init/adopt 로 만든 것). hook · MCP 에 LLMWIKI_ROOT 로,
+                      llmwiki shim 에 기본 데이터로 기록한다
       --force         미지원 OS 나 미감지 클라이언트에서도 강행한다
   -q, --quiet         진행 로그를 줄인다
   -h, --help          이 도움말
@@ -119,7 +125,7 @@ llmwiki_json 자동 컨텍스트 주입 설치
 주기 ingest 루틴 — raw/ 에 새 소스가 들어오면 에이전트가 위키에 넣는다
       --ingest-routine C  C 는 claude · codex · none. 주지 않으면 설치 중에 물어본다
       --routine-interval S  주기(초, 기본 3600)
-  -y, --yes           대화형 질문을 하지 않는다 (지정하지 않은 것은 건너뛴다)
+  -y, --yes           대화형 질문을 하지 않는다 (지정하지 않은 것은 건너뛴다, update 는 확인 없이 migrate)
 
 개인 저장소 — 이 clone 은 update 용으로 두고, 위키는 자기 private 저장소로 민다
       --private-remote URL  이미 만들어 둔 private 저장소를 remote 로 붙인다
@@ -159,6 +165,8 @@ while [ $# -gt 0 ]; do
         --python=*) PYTHON_OPT=${1#--python=} ;;
         --mcp-name) MCP_NAME=${2:?--mcp-name 에 이름이 필요하다}; shift ;;
         --qmd-name) LEGACY_QMD_FLAG=1; : "${2:?--qmd-name 에 이름이 필요하다}"; shift ;;
+        --data) DATA_OPT=${2:?--data 에 데이터 repo 경로가 필요하다}; shift ;;
+        --data=*) DATA_OPT=${1#--data=} ;;
         --force) FORCE=1 ;;
         --ingest-routine) ROUTINE=${2:?--ingest-routine 에 claude/codex/none 이 필요하다}; shift ;;
         --ingest-routine=*) ROUTINE=${1#--ingest-routine=} ;;
@@ -201,7 +209,8 @@ case $OS in
 esac
 
 [ -f "$CONTEXT_CLI" ] || die "$CONTEXT_CLI 가 없다 — 저장소 안에서 실행하라"
-[ -d "$REPO_ROOT/wiki" ] || die "$REPO_ROOT/wiki 가 없다 — repo root 해석 실패"
+# 코드 repo 에 위키가 없어도 된다(두 repo 운영) — 있어야 하는 것은 CLI 다.
+[ -f "$WIKI_CLI" ] || die "$WIKI_CLI 가 없다 — repo root 해석 실패"
 
 # --------------------------------------------------------------- 부트스트랩
 # 없는 도구를 사용자 영역에 받아 온다. 원칙 셋:
@@ -453,7 +462,7 @@ fi
 # --python 경로가 단어 분리로 깨지므로, 호출 지점마다 `set --` 로 인자
 # 목록을 만들어 넘긴다.
 run_context() {
-    set -- "$@"
+    if [ -n "$DATA" ]; then set -- --root "$DATA" "$@"; else set -- "$@"; fi
     if [ "$WANT_CODEX" -eq 1 ]; then set -- "$@" --client codex; fi
     if [ "$WANT_CLAUDE" -eq 1 ]; then set -- "$@" --client claude; fi
     if [ -n "$PYTHON" ]; then set -- "$@" --python "$PYTHON"; fi
@@ -475,6 +484,7 @@ report_detection() {
     step "감지"
     printf '  os              %s\n' "$OS"
     printf '  repo root       %s\n' "$REPO_ROOT"
+    printf '  데이터 root     %s\n' "${DATA:-$REPO_ROOT (단일 repo)}"
     printf '  다운로더        %s\n' "$(downloader_name)"
     printf '  부트스트랩      %s\n' "$([ "$BOOTSTRAP" -eq 1 ] && echo 허용 || echo '금지 (--no-bootstrap)')"
     printf '  python          %s  [%s, %s]\n' "${PY:-없음}" "$PY_VERSION" "$PY_SOURCE"
@@ -600,11 +610,22 @@ mcp_points_at() { # client name script -> 등록된 서버가 그 스크립트�
     mcp_show "$1" "$2" | grep -qF -- "$3"
 }
 
-mcp_add() { # client name script
+mcp_add() { # client name python script — 데이터 repo 가 있으면 LLMWIKI_ROOT 를 함께 기록한다
+    if [ -n "$DATA" ]; then
+        case $1 in
+            claude) claude mcp add --scope user -e "LLMWIKI_ROOT=$DATA" "$2" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
+            codex) codex mcp add "$2" --env "LLMWIKI_ROOT=$DATA" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
+        esac
+        return
+    fi
     case $1 in
         claude) claude mcp add --scope user "$2" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
         codex) codex mcp add "$2" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
     esac
+}
+
+mcp_data_current() { # client name -> 등록이 지금 데이터 root 를 가리키는가 (데이터가 없으면 언제나 참)
+    [ -z "$DATA" ] || mcp_points_at "$1" "$2" "LLMWIKI_ROOT=$DATA"
 }
 
 mcp_remove() { # client name
@@ -635,16 +656,16 @@ install_mcp_for() { # client
         return 0
     fi
     if mcp_points_at "$_client" "$MCP_NAME" "$CONTEXT_CLI"; then
-        if mcp_points_at "$_client" "$MCP_NAME" "$_py"; then
+        if mcp_points_at "$_client" "$MCP_NAME" "$_py" && mcp_data_current "$_client" "$MCP_NAME"; then
             say "  $_client: 이미 우리 것 — 그대로 둔다"
             if [ "$DRY_RUN" -eq 0 ]; then
                 mcp_state_record "$_client" "$MCP_NAME" "$CONTEXT_CLI"
             fi
             return 0
         fi
-        # 우리 서버가 맞는데 인터프리터가 바뀌었다. hook 과 같은 것을 쓰게 맞춘다.
+        # 우리 서버가 맞는데 인터프리터나 데이터 root 가 바뀌었다. hook 과 같은 것을 쓰게 맞춘다.
         if [ "$DRY_RUN" -eq 1 ]; then
-            plan "$_client mcp remove/add $MCP_NAME — 인터프리터를 $_py 로 맞춘다"
+            plan "$_client mcp remove/add $MCP_NAME — 인터프리터 $_py · 데이터 ${DATA:-(이 저장소)} 로 맞춘다"
             return 0
         fi
         mcp_remove "$_client" "$MCP_NAME" || :
@@ -785,11 +806,11 @@ install_routine() {
     fi
     set -- run
     if [ "$DRY_RUN" -eq 1 ]; then
-        "$PY" "$ROUTINE_CLI" --root "$REPO_ROOT" install --agent "$ROUTINE" \
+        "$PY" "$ROUTINE_CLI" --root "${DATA:-$REPO_ROOT}" install --agent "$ROUTINE" \
             --interval "$ROUTINE_INTERVAL" --python "$PY" --remote "$REMOTE_NAME" --dry-run
         return 0
     fi
-    "$PY" "$ROUTINE_CLI" --root "$REPO_ROOT" install --agent "$ROUTINE" \
+    "$PY" "$ROUTINE_CLI" --root "${DATA:-$REPO_ROOT}" install --agent "$ROUTINE" \
         --interval "$ROUTINE_INTERVAL" --python "$PY" --remote "$REMOTE_NAME" ||
         warn "루틴 등록에 실패했다 — 나머지 설치는 그대로다"
 }
@@ -852,41 +873,44 @@ install_private_remote() {
     if [ -n "$PRIVATE_URL" ]; then set -- "$@" --url "$PRIVATE_URL"; fi
     if [ -n "$GH_CREATE" ]; then set -- "$@" --gh-create "$GH_CREATE"; fi
     if [ "$DRY_RUN" -eq 1 ]; then set -- "$@" --dry-run; fi
-    "$PY" "$ROUTINE_CLI" --root "$REPO_ROOT" "$@" ||
+    "$PY" "$ROUTINE_CLI" --root "${DATA:-$REPO_ROOT}" "$@" ||
         warn "개인 저장소 연결에 실패했다 — 나머지 설치는 그대로다"
 }
 
+# --------------------------------------------------------------- llmwiki shim · 데이터 repo 지침
+install_shim() {
+    step "llmwiki 명령 (shim)"
+    set -- shim install --python "$PY"
+    if [ -n "$DATA" ]; then set -- "$@" --data "$DATA"; fi
+    if [ "$DRY_RUN" -eq 1 ]; then set -- "$@" --dry-run; fi
+    "$PY" "$WIKI_CLI" "$@" || warn "같은 이름의 llmwiki 가 이미 있다 — 그대로 둔다"
+}
+
+uninstall_shim() {
+    step "llmwiki 명령 (shim) 제거"
+    set -- shim remove
+    if [ "$DRY_RUN" -eq 1 ]; then set -- "$@" --dry-run; fi
+    "$PY" "$WIKI_CLI" "$@" || warn "llmwiki 는 우리가 만든 것이 아니다 — 그대로 둔다"
+}
+
+install_data_guides() {
+    [ -n "$DATA" ] || return 0
+    [ -f "$DATA/llmwiki.lock" ] || return 0
+    step "데이터 repo 지침 (CLAUDE.md · AGENTS.md · skills)"
+    set -- --root "$DATA" guides
+    if [ "$DRY_RUN" -eq 1 ]; then set -- "$@" --dry-run; fi
+    if [ "$QUIET" -eq 1 ]; then "$PY" "$WIKI_CLI" "$@" >/dev/null; else "$PY" "$WIKI_CLI" "$@"; fi
+}
+
 # --------------------------------------------------------------- update
+# llmwiki update · install.ps1 update 와 같은 Python 구현(llmwiki.py update)을 부른다.
 do_update() {
-    step "upstream 갱신 (origin)"
-    if [ ! -d "$REPO_ROOT/.git" ]; then
-        die "git 저장소가 아니다: $REPO_ROOT"
-    fi
-    _dirty=$(git -C "$REPO_ROOT" status --porcelain | head -n 5)
-    if [ -n "$_dirty" ]; then
-        warn "커밋되지 않은 변경이 있다 — 먼저 정리하라"
-        printf '%s\n' "$_dirty" | sed 's/^/    /'
-        return 1
-    fi
-    if ! git -C "$REPO_ROOT" remote get-url origin >/dev/null 2>&1; then
-        warn "remote 'origin' 이 없다 — 이 clone 은 upstream 을 가리키고 있지 않다"
-        warn "  붙이려면: git -C $REPO_ROOT remote add origin <upstream 주소>"
-        return 1
-    fi
-    _branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
-    if [ "$DRY_RUN" -eq 1 ]; then
-        plan "git fetch origin && git merge --ff-only origin/$_branch"
-        return 0
-    fi
-    git -C "$REPO_ROOT" fetch origin "$_branch" || return 1
-    if git -C "$REPO_ROOT" merge --ff-only "origin/$_branch"; then
-        say "  최신으로 맞췄다"
-    else
-        warn "ff-only 로 합칠 수 없다 (갈라졌다). 직접 확인하라:"
-        warn "  git -C $REPO_ROOT log --oneline HEAD..origin/$_branch"
-        return 1
-    fi
-    say "  개인 위키를 밀어 올리려면: git push $REMOTE_NAME HEAD:$_branch"
+    step "갱신 (코드 repo pull → 데이터 repo 맞춤)"
+    set -- update
+    if [ -n "$DATA" ]; then set -- "$@" --data "$DATA"; fi
+    if [ "$ASK" -eq 0 ]; then set -- "$@" --yes; fi
+    if [ "$DRY_RUN" -eq 1 ]; then set -- "$@" --dry-run; fi
+    "$PY" "$WIKI_CLI" "$@"
 }
 
 # --------------------------------------------------------------- Codex 신뢰
@@ -931,6 +955,13 @@ fi
 resolve_python
 PYTHON=$PY
 
+# 데이터 root: --data 가 우선, 없으면 shim 이 기록해 둔 것 (install 이 --data 로 놓았다).
+if [ -n "$DATA_OPT" ]; then
+    DATA=$(cd "$DATA_OPT" 2>/dev/null && pwd -P) || die "--data $DATA_OPT 가 없다 — 먼저 llmwiki init 이나 adopt 로 만든다"
+elif [ -n "$PY" ] && [ "$COMMAND" != install ]; then
+    DATA=$("$PY" "$WIKI_CLI" shim status --field data 2>/dev/null || :)
+fi
+
 case $COMMAND in
     doctor)
         report_detection
@@ -952,7 +983,7 @@ case $COMMAND in
         run_context verify || _verify_failed=1
         if [ -f "$ROUTINE_CLI" ]; then
             step "주기 ingest 루틴"
-            "$PY" "$ROUTINE_CLI" --root "$REPO_ROOT" status
+            "$PY" "$ROUTINE_CLI" --root "${DATA:-$REPO_ROOT}" status
         fi
         [ -z "${_verify_failed-}" ]
         ;;
@@ -973,6 +1004,8 @@ case $COMMAND in
         fi
         install_hooks
         install_mcp
+        install_shim
+        install_data_guides
         install_private_remote
         install_routine
         if [ "$DRY_RUN" -eq 1 ]; then
@@ -984,13 +1017,14 @@ case $COMMAND in
         run_context verify || true
         step "완료"
         say "  되돌리려면:  $SCRIPT_DIR/install.sh uninstall"
-        say "  코드 갱신:   $SCRIPT_DIR/install.sh update   (origin 에서 받아 온다)"
+        say "  코드 갱신:   llmwiki update   (= $SCRIPT_DIR/install.sh update)"
         ;;
     uninstall)
         report_detection
         [ -n "$PY" ] || die "Python 3.9 이상이 없어 제거를 실행할 수 없다"
         uninstall_hooks
         uninstall_mcp
+        uninstall_shim
         uninstall_routine
         step "받아 온 도구"
         warn "받아 온 도구(uv/Bun)는 자동으로 지우지 않는다 — $UV_DIR, $BUN_DIR"

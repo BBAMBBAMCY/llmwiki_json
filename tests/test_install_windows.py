@@ -257,5 +257,62 @@ class PowerShellRunTest(unittest.TestCase):
             self.assertIn("dry-run", result.stdout)
 
 
+@unittest.skipIf(PWSH is None, "pwsh 가 없다 — 두 repo 설치 실행은 건너뛴다")
+class PowerShellTwoRepoTest(unittest.TestCase):
+    """install.ps1 의 -Data: hook·MCP 의 LLMWIKI_ROOT, llmwiki shim, 데이터 repo 지침, update 위임."""
+
+    def setUp(self) -> None:
+        from tests.test_install import FAKE_MCP_CLI
+        self.tmp = Path(tempfile.mkdtemp(prefix="llmwiki-ps1-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.home = self.tmp / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        fake = self.bin / "claude"
+        fake.write_text(FAKE_MCP_CLI, encoding="utf-8")
+        fake.chmod(0o755)
+        self.data = self.tmp / "data"
+        proc = subprocess.run([sys.executable, str(REPO / "scripts" / "llmwiki.py"), "init", str(self.data),
+                               "--no-git"], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        (self.data / "CLAUDE.md").unlink()
+        self.env = {**os.environ, "HOME": str(self.home), "LLMWIKI_STATE_DIR": str(self.home / ".llmwiki"),
+                    "FAKE_MCP_DB": str(self.tmp / "mcp"),
+                    "PATH": os.pathsep.join([str(self.bin), os.environ.get("PATH", "")])}
+        for key in ("LLMWIKI_ROOT", "LLMWIKI_DEFAULT_ROOT", "LLMWIKI_SHIM_DIR"):
+            self.env.pop(key, None)
+
+    def ps1(self, *argv: str) -> subprocess.CompletedProcess[str]:
+        return run_pwsh(list(argv), env=self.env, cwd=self.tmp)
+
+    def test_install_records_the_data_root_everywhere_and_uninstall_takes_the_shim(self) -> None:
+        out = self.ps1("install", "--claude", "--no-bun", "-q", "--force", "--python", sys.executable,
+                       "-Data", str(self.data))
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        command = ctx.installed_command(self.home / ".claude" / "settings.json")
+        self.assertIn(f"LLMWIKI_ROOT={self.data}", command.replace("'", ""))
+        mcp = (self.tmp / "mcp.claude").read_text(encoding="utf-8")
+        self.assertIn(f"LLMWIKI_ROOT={self.data}", mcp)
+        shim = self.home / ".local" / "bin" / ("llmwiki.cmd" if os.name == "nt" else "llmwiki")
+        self.assertIn("llmwiki-shim", shim.read_text(encoding="utf-8"))
+        self.assertIn(f"data: {self.data}", shim.read_text(encoding="utf-8"))
+        self.assertTrue((self.data / "CLAUDE.md").read_text(encoding="utf-8").startswith("<!-- 생성 파일"))
+        verify = self.ps1("verify", "--claude", "-q", "--force", "--python", sys.executable)
+        self.assertIn(f"repo: {self.data}", verify.stdout)        # -Data 없이도 shim 이 기록한 데이터를 본다
+        for name in ("lock-schema", "lock-code-version", "guides-current", "shim"):
+            self.assertRegex(verify.stdout, rf"(?m)^ok   {name}:", name)
+        out = self.ps1("uninstall", "--claude", "-q", "--force", "--python", sys.executable)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertFalse(shim.exists())
+
+    def test_update_goes_to_the_python_update(self) -> None:
+        plain = self.tmp / "plain"
+        (plain / "wiki").mkdir(parents=True)
+        out = self.ps1("update", "-Data", str(plain), "--force", "--python", sys.executable)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("데이터 repo 가 아니다", out.stderr)      # 이 판정은 llmwiki.py update 의 것이다
+
+
 if __name__ == "__main__":
     unittest.main()

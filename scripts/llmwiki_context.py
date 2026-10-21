@@ -50,10 +50,12 @@ from typing import Any, Iterable
 try:  # package import (bench: `from scripts import llmwiki_context`)
     from . import llmwiki_index as IDX
     from . import llmwiki_paths as P
+    from . import llmwiki_repo as R
 except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_index as IDX  # type: ignore[no-redef]
     import llmwiki_paths as P  # type: ignore[no-redef]
+    import llmwiki_repo as R  # type: ignore[no-redef]
 
 DEFAULT_ROOT = P.CODE_ROOT
 
@@ -1429,7 +1431,7 @@ CODEX_STALE_TRUST = "codex-trust-stale"
 # 비우고 조용히 성공한다. 훅이 프롬프트를 막는 일은 없어야 한다.
 HOOK_TEMPLATE = (
     "if [ -r {script} ] && [ -x {python} ]; then "
-    "{python} {script} hook 2>/dev/null || :; "
+    "{env}{python} {script} hook 2>/dev/null || :; "
     "else {{ command -p cat 2>/dev/null || cat; }} >/dev/null 2>&1 || :; fi"
 )
 # Windows 의 클라이언트는 hook 을 cmd.exe 로 돌린다. 위 sh 문법은 한 글자도
@@ -1438,7 +1440,7 @@ HOOK_TEMPLATE = (
 # 없으면 파이썬이 2 로 죽고, 둘 다 `||` 오른쪽으로 떨어져 stdin 을 비우고
 # 조용히 성공한다. `more` 가 POSIX 쪽 `cat >/dev/null` 자리다.
 HOOK_TEMPLATE_WINDOWS = (
-    "({python} {script} hook 2>nul) || (more>nul 2>nul)"
+    "({env}{python} {script} hook 2>nul) || (more>nul 2>nul)"
 )
 
 
@@ -1520,18 +1522,29 @@ def win_quote(value: str) -> str:
 
 
 def hook_command(python: str | None = None, script: Path | None = None,
-                 *, windows: bool | None = None) -> str:
+                 *, windows: bool | None = None, root: Path | str | None = None) -> str:
     """hook 에 박을 한 줄. 플랫폼마다 이 줄을 돌리는 셸이 다르다.
 
     `windows` 를 주지 않으면 지금 도는 OS 를 따른다. 설치기와 verify 가 같은
-    함수를 쓰므로, 설치한 것과 점검하는 것이 어긋날 수 없다.
+    함수를 쓰므로, 설치한 것과 점검하는 것이 어긋날 수 없다. `root` 는 코드 repo 밖의
+    데이터 root 다 — 주면 `LLMWIKI_ROOT=<root>` 를 함께 박는다(hook 은 사용자 프로젝트의 cwd 에서
+    돌아 `llmwiki.lock` 을 찾아 올라갈 수 없다).
     """
     if windows is None:
         windows = os.name == "nt"
     quote = win_quote if windows else shlex.quote
     template = HOOK_TEMPLATE_WINDOWS if windows else HOOK_TEMPLATE
-    return template.format(python=quote(python or hook_python()),
+    env = ""
+    if root:
+        env = f'set "{ENV_ROOT}={root}" && ' if windows else f"{ENV_ROOT}={shlex.quote(str(root))} "
+    return template.format(python=quote(python or hook_python()), env=env,
                            script=quote(str(script or Path(__file__).resolve())))
+
+
+def data_root_of(root: Path) -> Path | None:
+    """hook·MCP·지침에 박을 데이터 root. 코드 repo 자신(단일 repo)이면 None — 박지 않는다."""
+    resolved = Path(root).resolve()
+    return None if resolved == P.CODE_ROOT else resolved
 
 
 def load_json(path: Path, fallback: Any) -> Any:
@@ -1622,18 +1635,25 @@ def install_guide(path: Path, body: str, *, remove: bool) -> dict[str, Any]:
 def guide_body(root: Path, python: str | None = None) -> str:
     """전역 지침에 넣을 문단. 경로는 설치 시점에 해석해 그대로 박는다."""
     interpreter = shlex.quote(python or hook_python())
-    script = shlex.quote(str(Path(__file__).resolve()))
-    wiki_cli = shlex.quote(str(Path(__file__).resolve().parent / "llmwiki.py"))
+    data = data_root_of(root)
+    pin = f" --root {shlex.quote(str(data))}" if data else ""
+    script = shlex.quote(str(Path(__file__).resolve())) + pin
+    wiki_cli = shlex.quote(str(Path(__file__).resolve().parent / "llmwiki.py")) + pin
+    layout = P.Layout(root)
+    derived = ("`.llmwiki/index/`, `.llmwiki/viewer-data/`" if layout.split
+               else "`index/`, `viewer/public/data/`")
+    context_json = "config/context.json" if layout.split else "tools/config/context.json"
     return "\n".join([
         "## llmwiki_json 개인 지식 위키",
         "",
-        f"- 정본: `{root}/wiki/**/*.json`. 파생물(`index/`, `viewer/public/data/`)은 "
+        f"- 정본: `{root}/wiki/**/*.json`. 파생물({derived})은 "
         f"`{interpreter} {wiki_cli} build` 로만 갱신한다. "
-        "`raw/` 는 수정하지 않는다.",
+        "`raw/` 는 수정하지 않는다."
+        + (f" 데이터 repo 다 — 코드는 `{P.CODE_ROOT}`, 갱신은 `llmwiki update`." if layout.split else ""),
         "- 질문마다 `UserPromptSubmit` hook 이 관련 근거를 `<llmwiki-context>` 블록으로 "
         "자동 주입한다. 그 안의 page/block ID 를 근거로 답한다. 주소만 온 경우도 있는데, "
         "그때는 본문이 실리지 않았다는 뜻이니 아래 조회로 필요한 block 만 가져온다.",
-        "- `tools/config/context.json` 의 `always` 목록은 검색 결과와 무관하게 매번 "
+        f"- `{context_json}` 의 `always` 목록은 검색 결과와 무관하게 매번 "
         "함께 붙고, `SessionStart` hook(source: startup·resume·clear·**compact**)에서도 "
         "같은 목록을 낸다 — 세션이 새로 열리거나 컴팩트로 컨텍스트가 비워져도 그 목록만은 곧바로 "
         "다시 채워진다.",
@@ -1652,7 +1672,7 @@ def guide_body(root: Path, python: str | None = None) -> str:
 
 def do_install(root: Path, *, remove: bool, guides: bool,
                clients: Iterable[str] = CLIENTS, python: str | None = None) -> dict[str, Any]:
-    command = hook_command(python)
+    command = hook_command(python, root=data_root_of(root))
     body = guide_body(root, python)
     report: dict[str, Any] = {"command": command, "clients": {}}
     for name in clients:
@@ -1822,12 +1842,33 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
 
     interpreter = python or hook_python()
     check("python", os.access(interpreter, os.X_OK), interpreter)
+    check("code", (P.CODE_ROOT / "scripts" / "llmwiki.py").is_file(), str(P.CODE_ROOT))
     check("repo", (root / "wiki").is_dir(), str(root))
+    layout = P.Layout(root)
+    if layout.split:
+        lock = P.read_lock(root) or {}
+        version = P.code_version()
+        check("lock-schema", lock.get("schema_version") == P.SCHEMA_VERSION,
+              f"lock {lock.get('schema_version')} · 코드 {P.SCHEMA_VERSION}"
+              + ("" if lock.get("schema_version") == P.SCHEMA_VERSION else " — `llmwiki update` 로 맞춘다"))
+        check("lock-code-version", lock.get("code_version") == version,
+              f"lock {lock.get('code_version')} · 코드 {version}"
+              + ("" if lock.get("code_version") == version else " — `llmwiki update` 로 맞춘다"))
+        current = R.guides_current(root)
+        stale = sorted(name for name, ok in current.items() if not ok)
+        check("guides-current", not stale, "생성 지침·skills 링크가 최신이다" if not stale
+              else f"낡았다: {', '.join(stale)} — `llmwiki guides` (또는 update) 로 다시 만든다")
+    shim = R.shim_state()
+    shim_ok = shim["exists"] and shim["ours"] and Path(shim["code"] or "/").resolve() == P.CODE_ROOT
+    check("shim", shim_ok,
+          f"{shim['path']} → {shim['code'] or '?'}" + (f" (data {shim['data']})" if shim["data"] else "")
+          + ("" if shim_ok else " — 이 코드 repo 를 가리키지 않는다, 다시 install 하라")
+          if shim["exists"] else f"{shim['path']} 없음 — install 이 놓는다")
 
     docs = load_corpus(root)
     check("corpus", bool(docs), f"{len(docs)} pages")
 
-    expected = hook_command(python)
+    expected = hook_command(python, root=data_root_of(root))
     for name in clients:
         hooks_path, guide_path = client_paths(name)
         index = installed_group_index(hooks_path)
@@ -2051,7 +2092,7 @@ def run(argv: list[str] | None = None) -> int:
                 print("모든 점검 통과" if report["ok"] else "점검 실패 — 위 FAIL 항목을 보라")
             return 0 if report["ok"] else 1
         if args.dry_run:
-            plan = {"command": hook_command(args.python), "clients": {}}
+            plan = {"command": hook_command(args.python, root=data_root_of(root)), "clients": {}}
             for name in clients:
                 hooks_path, guide_path = client_paths(name)
                 plan["clients"][name] = {

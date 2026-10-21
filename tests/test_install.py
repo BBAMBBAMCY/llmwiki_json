@@ -159,12 +159,18 @@ shift
 action=$1; shift
 name=""
 args=""
+envs=""
+want_env=0
 for a in "$@"; do
+    if [ "$want_env" -eq 1 ]; then envs="$envs $a"; want_env=0; continue; fi
     case $a in
         --scope|user|--) continue ;;
+        -e|--env) want_env=1; continue ;;
     esac
     if [ -z "$name" ]; then name=$a; else args="$args $a"; fi
 done
+# 실제 claude/codex 처럼 `mcp get` 이 환경변수도 보여 준다
+if [ -n "$envs" ]; then args="$args  env:$envs"; fi
 touch "$db"
 case $action in
   get)
@@ -198,9 +204,9 @@ class InstallerCase(unittest.TestCase):
         # 개발 저장소와 다른, 일부러 깊은 경로에 clone 한다.
         self.clone = self.tmp / "somewhere" / "else" / "my-wiki"
         (self.clone / "scripts").mkdir(parents=True)
-        for name in ("llmwiki.py", "llmwiki_index.py", "llmwiki_context.py", "llmwiki_text.py", "llmwiki_paths.py", "llmwiki_migrate.py",
-                     "install.sh"):
-            shutil.copy2(REPO / "scripts" / name, self.clone / "scripts" / name)
+        # 스크립트는 서로를 import 한다 — 하나라도 빠지면 hook 이 조용히 죽는다. 통째로 복사한다.
+        for path in sorted((REPO / "scripts").glob("*.py")) + [REPO / "scripts" / "install.sh"]:
+            shutil.copy2(path, self.clone / "scripts" / path.name)
         (self.clone / "scripts" / "install.sh").chmod(0o755)
         for rel in ("tools/config/groups.json", "tools/schema/page.schema.json"):
             dest = self.clone / rel
@@ -1109,7 +1115,141 @@ if __name__ == "__main__":
     unittest.main()
 
 
-# --------------------------------------------------------------------------- llmwiki shim
+# --------------------------------------------------------------------------- 두 repo 운영
+class TwoRepoInstallTest(InstallerCase):
+    """`--data <데이터 repo>`: hook·MCP 에 LLMWIKI_ROOT, llmwiki shim, 생성 지침, verify 의 새 점검."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for rel in ("INIT.md", "VERSION"):
+            shutil.copy2(REPO / rel, self.clone / rel)
+        shutil.copytree(REPO / ".skills", self.clone / ".skills")
+        self.data = self.tmp / "my-data"
+        proc = subprocess.run([sys.executable, str(self.clone / "scripts" / "llmwiki.py"), "init", str(self.data),
+                               "--no-git"], capture_output=True, text=True, env=self.env())
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        pages = self.data / "wiki" / "concepts"
+        (pages / "corpus.json").write_text(json.dumps(CORPUS, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.shim = self.home / ".local" / "bin" / "llmwiki"
+        self.fake_clients()
+
+    def install_data(self, *extra: str, expect: int = 0) -> subprocess.CompletedProcess[str]:
+        return self.run_installer("install", "--codex", "--claude", "--no-bun", "-q", "--data", str(self.data),
+                                  *extra, expect=expect)
+
+    def test_hook_and_mcp_carry_the_data_root(self) -> None:
+        self.install_data()
+        for path in (self.codex_hooks, self.claude_settings):
+            command = ctx.installed_command(path)
+            self.assertIn(f"LLMWIKI_ROOT={self.data}", command)
+            self.assertIn(str(self.clone / "scripts" / "llmwiki_context.py"), command)
+        for client in ("claude", "codex"):
+            line = self.registered(client)["llmwiki"]
+            self.assertIn(f"LLMWIKI_ROOT={self.data}", line)
+            self.assertIn(str(self.clone / "scripts" / "llmwiki_context.py"), line)
+        # 전역 지침도 데이터 repo 를 가리킨다
+        guide = self.claude_guide.read_text(encoding="utf-8")
+        self.assertIn(f"{self.data}/wiki/**/*.json", guide)
+        self.assertIn(f"--root {self.data}", guide)
+        # hook 이 데이터 repo 의 정본에서 주입한다 — 사용자 프로젝트(cwd)가 어디든
+        command = ctx.installed_command(self.claude_settings)
+        payload = json.dumps({"prompt": "RefModel 무효 ICD 코드 324건 노출 정책", "hook_event_name": "UserPromptSubmit"})
+        hook = subprocess.run(["sh", "-c", command], input=payload, capture_output=True, text=True,
+                              cwd=str(self.tmp), env=self.env())
+        self.assertIn("폐기-icd-코드", json.loads(hook.stdout)["hookSpecificOutput"]["additionalContext"])
+
+    def test_the_shim_runs_this_code_against_the_data_repo(self) -> None:
+        self.install_data()
+        text = self.shim.read_text(encoding="utf-8")
+        self.assertIn("llmwiki-shim", text)
+        self.assertIn(str(self.clone / "scripts" / "llmwiki.py"), text)
+        out = subprocess.run([str(self.shim), "paths"], capture_output=True, text=True, cwd=str(self.tmp),
+                             env=self.env())
+        self.assertEqual(out.returncode, 0, out.stderr)
+        paths = json.loads(out.stdout)
+        self.assertEqual((paths["root"], paths["mode"], paths["root_source"]),
+                         (str(self.data.resolve()), "split", "LLMWIKI_DEFAULT_ROOT"))
+        # 다른 데이터 repo 안에서는 그 repo 의 lock 이 먼저다
+        other = self.tmp / "other-data"
+        subprocess.run([sys.executable, str(self.clone / "scripts" / "llmwiki.py"), "init", str(other), "--no-git"],
+                       capture_output=True, text=True, env=self.env(), check=True)
+        paths = json.loads(subprocess.run([str(self.shim), "paths"], capture_output=True, text=True,
+                                          cwd=str(other / "wiki"), env=self.env()).stdout)
+        self.assertEqual(paths["root"], str(other.resolve()))
+        # 모든 하위 명령이 shim 으로 된다
+        for argv in (("validate",), ("lint",), ("build",), ("query", "golden"), ("migrate",),
+                     ("outline", "golden-set"), ("get", "golden-set"), ("render", "golden-set"), ("log",)):
+            proc = subprocess.run([str(self.shim), *argv], capture_output=True, text=True, cwd=str(self.tmp),
+                                  env=self.env())
+            self.assertIn(proc.returncode, (0, 1), (argv, proc.stderr))
+        # shim 자리가 PATH 에 없으면 추가 방법만 알려 준다 (profile·PATH 는 고치지 않는다)
+        out = self.run_installer("install", "--codex", "--claude", "--no-bun", "--no-mcp", "--data", str(self.data))
+        self.assertIn("PATH 에", out.stdout)
+
+    def test_data_guides_are_generated_at_install(self) -> None:
+        (self.data / "CLAUDE.md").unlink()
+        self.install_data()
+        self.assertTrue((self.data / "CLAUDE.md").read_text(encoding="utf-8").startswith("<!-- 생성 파일"))
+
+    def test_verify_checks_the_two_repos(self) -> None:
+        self.install_data()
+        out = self.run_installer("verify", "--codex", "--claude", "-q", "--data", str(self.data), expect=1).stdout
+        for name in ("code", "repo", "lock-schema", "lock-code-version", "guides-current", "shim"):
+            self.assertRegex(out, rf"(?m)^ok   {name}:", name)
+        self.assertIn("FAIL codex.trust", out)            # 신뢰는 사용자가 Codex 에서 준다 — 그것만 남는다
+        # 데이터를 따로 주지 않아도 shim 이 기록한 데이터 repo 를 본다
+        out = self.run_installer("verify", "--claude", "-q", expect=0).stdout
+        self.assertIn(f"repo: {self.data.resolve()}", out)
+        # lock 이 다른 코드 판이면, LOCAL.md 가 바뀌어 지침이 낡았으면 FAIL 이다
+        lock = json.loads((self.data / "llmwiki.lock").read_text(encoding="utf-8"))
+        (self.data / "llmwiki.lock").write_text(json.dumps({**lock, "code_version": "0.9.0"}), encoding="utf-8")
+        (self.data / "LOCAL.md").write_text("# 바뀐 규칙\n", encoding="utf-8")
+        out = self.run_installer("verify", "--claude", "-q", expect=1).stdout
+        self.assertIn("FAIL lock-code-version", out)
+        self.assertIn("FAIL guides-current", out)
+
+    def test_a_shim_pointing_elsewhere_fails_verify(self) -> None:
+        self.install_data()
+        self.shim.write_text(self.shim.read_text(encoding="utf-8").replace(str(self.clone), "/elsewhere/code"),
+                             encoding="utf-8")
+        out = self.run_installer("verify", "--claude", "-q", expect=1).stdout
+        self.assertIn("FAIL shim", out)
+
+    def test_adding_the_data_root_changes_the_command_so_codex_must_trust_again(self) -> None:
+        config = self.home / ".codex" / "config.toml"
+        self.run_installer("install", "--codex", "--no-mcp", "--no-bun", "-q")
+        config.write_text(f'[hooks.state."{self.codex_hooks}:user_prompt_submit:1:0"]\n'
+                          'trusted_hash = "sha256:old-command-hash"\n', encoding="utf-8")
+        self.assertIn("ok   codex.trust: trusted", self.run_installer("verify", "--codex", "-q").stdout)
+        self.run_installer("install", "--codex", "--no-mcp", "--no-bun", "-q", "--data", str(self.data))
+        out = self.run_installer("verify", "--codex", "-q", "--data", str(self.data), expect=1).stdout
+        self.assertIn("FAIL codex.trust: review-required", out)
+
+    def test_uninstall_removes_our_shim_but_never_a_foreign_one(self) -> None:
+        self.install_data()
+        self.run_installer("uninstall", "--codex", "--claude", "-q")
+        self.assertFalse(self.shim.exists())
+        self.shim.parent.mkdir(parents=True, exist_ok=True)
+        self.shim.write_text("#!/bin/sh\necho mine\n", encoding="utf-8")
+        out = self.install_data()
+        self.assertIn("덮어쓰지 않는다", out.stdout + out.stderr)
+        self.assertEqual(self.shim.read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+        self.run_installer("uninstall", "--codex", "--claude", "-q")
+        self.assertEqual(self.shim.read_text(encoding="utf-8"), "#!/bin/sh\necho mine\n")
+
+    def test_update_is_the_python_update(self) -> None:
+        self.install_data()
+        out = self.run_installer("update", "--data", str(self.data), "--dry-run", expect=1)
+        # 코드 clone 이 git 저장소가 아니다 — 그 판정은 llmwiki.py update 가 낸다
+        self.assertIn("update 멈춤: 코드 repo 가 git 저장소가 아니다", out.stderr)
+        sh = (REPO / "scripts" / "install.sh").read_text(encoding="utf-8")
+        ps1 = (REPO / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        self.assertIn('"$PY" "$WIKI_CLI" "$@"', sh[sh.index("do_update()"):])
+        self.assertIn("$a = @($WikiCli, 'update')", ps1)
+        self.assertNotIn("merge --ff-only", sh)
+        self.assertNotIn("merge --ff-only", ps1)
+
+
 class ShimFormTest(unittest.TestCase):
     """shim 의 두 모양 — POSIX sh 와 Windows cmd. 설치·실행·제거를 각각 본다."""
 
