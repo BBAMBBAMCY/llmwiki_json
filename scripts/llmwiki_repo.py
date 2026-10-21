@@ -562,3 +562,103 @@ def adopt(target: Path, *, code: Path | None = None, apply: bool = False, commit
             raise RuntimeError(f"adopt 커밋 실패: {out}")
         report["commit"] = git(target, "rev-parse", "HEAD")[1]
     return report
+
+
+# --------------------------------------------------------------------------- update (코드 pull 까지)
+# update 는 두 단계다. 앞 단계(이 함수)는 지금 돌고 있는 코드로 데이터·코드 repo 를 검사하고 코드를
+# `git pull --ff-only` 한다. 뒤 단계(migrate·지침·build·commit)는 **받아 온 새 코드**가 해야 하므로
+# `llmwiki.py update --post-pull` 로 새 프로세스를 띄운다 — 옛 코드가 새 스키마를 옮길 수는 없다.
+DATA_COMMIT_PATHS = ("wiki", "raw", "config", P.LOCK_NAME, "LOCAL.md", *GUIDE_FILES, ".gitignore")
+
+
+class UpdateStop(Exception):
+    """update 를 멈추는 조건. 메시지가 그대로 사용자에게 간다."""
+
+
+def dirty(root: Path, *, untracked: bool = True) -> str:
+    args = ["status", "--porcelain"] + ([] if untracked else ["--untracked-files=no"])
+    status, out = git(root, *args)
+    if status != 0:
+        raise UpdateStop(f"git status 실패 ({root}): {out}")
+    return out.strip()
+
+
+def upstream_of(code: Path) -> str:
+    status, out = git(code, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if status != 0 or not out.strip():
+        raise UpdateStop(f"코드 repo 에 upstream 이 없다 — `git -C {code} branch --set-upstream-to origin/main` 처럼 잇는다")
+    return out.strip().splitlines()[-1]
+
+
+def pull_code(code: Path, *, dry_run: bool, say: Any = print) -> dict[str, Any]:
+    """코드 repo 를 fast-forward 로만 받는다. 로컬 변경·로컬 commit 이 있으면 멈춘다."""
+    if not is_own_repo(code):
+        raise UpdateStop(f"코드 repo 가 git 저장소가 아니다: {code}")
+    changes = dirty(code, untracked=False)
+    if changes:
+        raise UpdateStop(f"코드 repo 에 로컬 변경이 있다 — 커밋하거나 되돌린 뒤 다시 한다:\n{changes[:800]}")
+    upstream = upstream_of(code)
+    remote, _, branch = upstream.partition("/")
+    before = git(code, "rev-parse", "HEAD")[1]
+    if dry_run:
+        status, out = git(code, "ls-remote", remote, f"refs/heads/{branch}", timeout=60.0)
+        remote_head = out.split()[0] if status == 0 and out.split() else ""
+        status, ahead = git(code, "rev-list", "--count", f"{upstream}..HEAD")
+        if status == 0 and ahead.strip() not in ("", "0"):
+            raise UpdateStop(f"코드 repo 에 upstream 에 없는 로컬 commit {ahead.strip()}개가 있다 — 먼저 정리한다")
+        say(f"[dry-run] 코드 repo: git pull --ff-only ({upstream}) — {before[:7]} → "
+            + (remote_head[:7] if remote_head else "알 수 없음"))
+        return {"before": before, "after": before, "remote_head": remote_head, "pulled": False}
+    status, out = git(code, "fetch", remote, timeout=300.0)
+    if status != 0:
+        raise UpdateStop(f"코드 repo fetch 실패: {out[-400:]}")
+    status, ahead = git(code, "rev-list", "--count", f"{upstream}..HEAD")
+    if status != 0 or ahead.strip() != "0":
+        raise UpdateStop(f"코드 repo 에 upstream 에 없는 로컬 commit {ahead.strip()}개가 있다 — 먼저 정리한다")
+    status, out = git(code, "pull", "--ff-only", timeout=300.0)
+    if status != 0:
+        raise UpdateStop(f"코드 repo git pull --ff-only 실패: {out[-400:]}")
+    after = git(code, "rev-parse", "HEAD")[1]
+    if after != before:
+        # .pyc 는 소스의 (mtime 초, 크기) 로 낡았는지 본다. pull 이 같은 초에 같은 크기로 바꾼 파일
+        # (`SCHEMA_VERSION = "1.1"` → `"1.2"`) 은 옛 바이트코드가 그대로 쓰인다 — 새 코드를 띄우기 전에 지운다.
+        for cache in (code / "scripts").rglob("__pycache__"):
+            shutil.rmtree(cache, ignore_errors=True)
+    say(f"코드 repo: {before[:7]} → {after[:7]}" if after != before else "코드 repo: 이미 upstream 과 같다")
+    return {"before": before, "after": after, "pulled": after != before}
+
+
+def routine_push_target(data: Path) -> tuple[str, bool] | None:
+    """주기 루틴이 이 데이터 repo 에 push 하도록 설치돼 있으면 (remote, True)."""
+    base = Path(os.environ.get("LLMWIKI_STATE_DIR") or Path.home() / ".llmwiki")
+    try:
+        state = json.loads((base / "installed-routine").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict) or not state.get("push"):
+        return None
+    try:
+        if Path(str(state.get("root") or "")).resolve() != Path(data).resolve():
+            return None
+    except OSError:
+        return None
+    return str(state.get("remote") or "private"), True
+
+
+def commit_data(data: Path, message: str) -> str:
+    """데이터 repo 의 데이터 경로만 커밋한다. 바뀐 것이 없으면 빈 문자열."""
+    paths = [rel for rel in DATA_COMMIT_PATHS if (data / rel).exists() or tracked(data, rel)]
+    git(data, "add", "-A", "--", *paths)
+    status, out = git(data, "diff", "--cached", "--quiet")
+    if status == 0:
+        return ""
+    status, out = git(data, "commit", "-q", "-m", message)
+    if status != 0:
+        raise UpdateStop(f"데이터 repo 커밋 실패: {out}")
+    return git(data, "rev-parse", "HEAD")[1]
+
+
+def update_message(old_version: str, new_version: str, old_sha: str, new_sha: str,
+                   old_schema: str, new_schema: str) -> str:
+    return (f"코드 v{old_version}→v{new_version} ({old_sha[:7] or '-'}→{new_sha[:7] or '-'}) 갱신, "
+            f"schema {old_schema}→{new_schema}")

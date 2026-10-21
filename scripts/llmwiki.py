@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import unicodedata
@@ -2785,6 +2786,121 @@ def print_migrate(report: dict[str, Any]) -> None:
           f"{report['files_changed']} 파일" + (" (dry-run — 아무것도 쓰지 않았다, --apply 로 적용)"
                                               if report["dry_run"] else " 적용"))
 
+
+# --------------------------------------------------------------------------- update
+def confirm(question: str, yes: bool) -> bool:
+    if yes:
+        return True
+    if not sys.stdin or not sys.stdin.isatty():
+        raise WikiError(f"{question} — 확인이 필요하다. 터미널에서 다시 하거나 --yes 를 준다")
+    return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+
+
+def update(ws: Workspace, *, yes: bool = False, dry_run: bool = False, post_pull: bool = False,
+           prior: str = "") -> int:
+    """코드 repo 를 받고 데이터 repo 를 그 코드에 맞춘다 (`llmwiki update`, `install.sh/ps1 update`).
+
+    1) 데이터 repo 가 dirty 하면 멈춘다  2) 코드 repo `git pull --ff-only` (로컬 변경·commit 이 있으면 멈춘다)
+    3) 정본과 코드의 schema 가 다르면 migrate dry-run 을 보이고 확인을 받는다  4) migrate --apply
+    5) 지침·skills 를 다시 만들고 build·validate·lint — validate error 면 커밋하지 않고 멈춘다
+    6) lock 을 고치고 데이터 repo 에 커밋한다  7) 주기 루틴이 push 하도록 설치돼 있을 때만 push 한다.
+    2) 다음은 받아 온 새 코드가 해야 하므로 `update --post-pull` 로 새 프로세스를 띄운다.
+    """
+    code = P.CODE_ROOT
+    try:
+        if not ws.split:
+            if ws.root != code:
+                raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — "
+                                "`llmwiki init` 으로 만들거나 `llmwiki adopt` 로 바꾼다")
+            # 단일 repo: 코드와 위키가 한 저장소다. 코드만 ff 로 받고, 위키 커밋이 있으면 받지 못한다.
+            print("단일 repo 모드 — 코드만 받는다. 위키 커밋이 있으면 fast-forward 가 안 된다: "
+                  "`llmwiki adopt <이 저장소>` 로 데이터를 나누면 update 가 둘을 따로 맞춘다.")
+            R.pull_code(code, dry_run=dry_run)
+            return 0
+        data = ws.root
+        if not post_pull:
+            if R.is_own_repo(data):
+                changes = R.dirty(data)
+                if changes:
+                    raise R.UpdateStop(f"데이터 repo 에 커밋되지 않은 변경이 있다 — 먼저 커밋하거나 치운다:\n{changes[:800]}")
+            else:
+                print("데이터 repo 가 git 저장소가 아니다 — 커밋 없이 맞춘다")
+            pulled = R.pull_code(code, dry_run=dry_run)
+            if dry_run:
+                return update_post(ws, yes=yes, dry_run=True, prior=pulled["before"])
+            argv = [sys.executable, str(code / "scripts" / "llmwiki.py"), "--root", str(data), "update",
+                    "--post-pull", "--prior-commit", pulled["before"]] + (["--yes"] if yes else [])
+            sys.stdout.flush()
+            return subprocess.call(argv)
+        return update_post(ws, yes=yes, dry_run=dry_run, prior=prior)
+    except R.UpdateStop as exc:
+        print(f"update 멈춤: {exc}", file=sys.stderr)
+        return 1
+
+
+def update_post(ws: Workspace, *, yes: bool, dry_run: bool, prior: str) -> int:
+    """update 의 뒷단계 — 받아 온 코드로 돈다."""
+    data, code = ws.root, P.CODE_ROOT
+    lock = P.read_lock(data) or {}
+    old_version = str(lock.get("code_version") or "0.0.0")
+    old_sha = str(lock.get("code_commit") or prior or "")
+    new_version, new_sha = P.code_version(code), R.code_commit(code)
+    versions = data_schema_versions(ws)
+    old_schema = versions[0] if versions else SCHEMA_VERSION
+    if versions and P.schema_key(versions[-1]) > P.schema_key(SCHEMA_VERSION):
+        raise R.UpdateStop(f"정본 schema {versions[-1]} 가 코드 schema {SCHEMA_VERSION} 보다 새것이다 — "
+                           "코드를 먼저 갱신하라 (이 코드 repo 가 upstream 보다 뒤처졌다)")
+    needs_migrate = bool(versions) and versions != [SCHEMA_VERSION]
+    if (not needs_migrate and old_sha == new_sha and old_version == new_version
+            and str(lock.get("code_path") or "") == str(code)):
+        print(f"이미 최신 — 코드 v{new_version} ({new_sha[:7] or '-'}), schema {SCHEMA_VERSION}")
+        return 0
+    if needs_migrate:
+        plan = migrate(ws, apply=False)
+        print_migrate(plan)
+        if dry_run:
+            print(f"[dry-run] migrate --apply 로 schema {old_schema}→{SCHEMA_VERSION}")
+        elif not confirm(f"정본 {plan['pages_changed']} page 를 schema {old_schema}→{SCHEMA_VERSION} 로 옮길까?", yes):
+            print("옮기지 않고 멈춘다 — 아무것도 커밋하지 않았다")
+            return 1
+        else:
+            migrate(ws, apply=True)
+            print(f"migrate: {plan['pages_changed']} page 를 schema {SCHEMA_VERSION} 로 옮겼다")
+    message = R.update_message(old_version, new_version, old_sha, new_sha, old_schema, SCHEMA_VERSION)
+    if dry_run:
+        guides = R.sync_guides(data, code, dry_run=True)
+        print(f"[dry-run] 지침·skills: {guides}")
+        print(f"[dry-run] build · validate · lint 뒤 데이터 repo 커밋: {message}")
+        return 0
+    R.sync_guides(data, code)
+    try:
+        build(ws)
+        built = ""
+    except WikiError as exc:
+        built = str(exc)
+    errors, warnings = lint(ws)
+    print(f"build {'통과' if not built else '실패'} · validate {len(errors)} errors · lint {len(warnings)} warnings")
+    if built or errors:
+        for line in (errors or [built])[:20]:
+            print(f"ERROR {line}")
+        print("validate error 가 있어 커밋하지 않고 멈춘다 — 고친 뒤 `llmwiki update` 를 다시 돌린다", file=sys.stderr)
+        return 1
+    R.refresh_lock(data, schema_version=SCHEMA_VERSION, code=code)
+    if not R.is_own_repo(data):
+        print(f"갱신했다 (커밋 없음): {message}")
+        return 0
+    sha = R.commit_data(data, message)
+    print(f"데이터 repo 커밋 {sha[:7]}: {message}" if sha else "데이터 repo 에 바뀐 것이 없다 — 커밋하지 않았다")
+    target = R.routine_push_target(data)
+    if sha and target:
+        remote = target[0]
+        status, branch = R.git(data, "rev-parse", "--abbrev-ref", "HEAD")
+        status, out = R.git(data, "push", remote, f"HEAD:{branch}", timeout=300.0)
+        print(f"push {remote}/{branch}: {'완료' if status == 0 else '실패 — ' + out[-200:]}")
+    elif sha:
+        print("push 하지 않았다 (주기 루틴의 push 가 꺼져 있다)")
+    return 0
+
 # --------------------------------------------------------------------------- CLI
 def emit(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
@@ -2874,6 +2990,14 @@ def build_parser() -> argparse.ArgumentParser:
     ado.add_argument("--apply", action="store_true")
     ado.add_argument("--no-commit", action="store_true", help="leave the result uncommitted")
     ado.add_argument("--json", action="store_true", dest="as_json")
+
+    up = sub.add_parser("update", help="pull the code repo (ff-only) and bring the data repo to it: "
+                                       "migrate, guides, build/validate/lint, lock, commit")
+    up.add_argument("--data", help="data repo (default: the resolved data root)")
+    up.add_argument("--yes", "-y", action="store_true", help="do not ask before migrating")
+    up.add_argument("--dry-run", action="store_true", help="write nothing (no pull, no migrate, no commit)")
+    up.add_argument("--post-pull", action="store_true", help=argparse.SUPPRESS)
+    up.add_argument("--prior-commit", default="", help=argparse.SUPPRESS)
 
     gd = sub.add_parser("guides", help="data repo: regenerate CLAUDE.md/AGENTS.md (INIT.md + LOCAL.md) and the "
                                          "skills links (rewrites nothing that is already current)")
@@ -2982,6 +3106,10 @@ def run(argv: list[str] | None = None) -> int:
             print_adopt(report)
         checks = report.get("checks") or {}
         return 1 if any(item.get("errors") for item in checks.values()) else 0
+    elif command == "update":
+        target = Workspace(args.data) if args.data else ws
+        return update(target, yes=args.yes, dry_run=args.dry_run, post_pull=args.post_pull,
+                      prior=args.prior_commit)
     elif command == "guides":
         if not ws.split:
             raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — 단일 repo 의 CLAUDE.md 는 손으로 둔다")
