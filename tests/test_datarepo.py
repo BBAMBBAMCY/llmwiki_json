@@ -335,6 +335,35 @@ class AdoptTest(SplitCase):
         self.assertEqual(plan["root"], str(self.old))
         self.assertIn("adopt 할 저장소를 준다", self.wiki("adopt", cwd=self.tmp, expect=2).stderr)
 
+    def track_code_origin(self) -> None:
+        """공개 저장소를 clone 해 위키를 쌓은 옛 clone — origin 이 코드 저장소이고 main 이 그것을 따른다."""
+        git(self.code, "remote", "add", "origin", "https://github.com/Example/llmwiki.git")
+        git(self.old, "remote", "add", "origin", "git@github.com:example/llmwiki")
+        git(self.old, "config", "branch.main.remote", "origin")
+        git(self.old, "config", "branch.main.merge", "refs/heads/main")
+
+    def test_a_remote_pointing_at_the_code_repo_stops_being_the_push_target(self) -> None:
+        self.track_code_origin()
+        private = self.tmp / "private.git"
+        git(self.tmp, "init", "-q", "--bare", str(private))
+        git(self.old, "remote", "add", "private", str(private))
+        git(self.old, "push", "-q", "private", "HEAD:main")
+        plan = self.adopt()
+        self.assertEqual(plan["code_remotes"], [{"name": "origin", "url": "git@github.com:example/llmwiki"}])
+        self.assertIn("remote origin", self.wiki("adopt", str(self.old), cwd=self.tmp).stdout)
+        report = self.adopt("--apply")
+        self.assertEqual(report["code_remotes"][0]["renamed"], "llmwiki-code")
+        self.assertEqual(report["code_remotes"][0]["branch_upstream"], "private/main")
+        self.assertEqual(sorted(git(self.old, "remote").split()), ["llmwiki-code", "private"])
+        self.assertEqual(git(self.old, "rev-parse", "--abbrev-ref", "@{u}"), "private/main")
+
+    def test_without_a_private_remote_the_branch_upstream_is_dropped(self) -> None:
+        self.track_code_origin()
+        report = self.adopt("--apply")
+        self.assertEqual(report["code_remotes"][0]["branch_upstream"], "")
+        self.assertEqual(git(self.old, "remote").split(), ["llmwiki-code"])
+        self.assertEqual(git(self.old, "config", "--get", "branch.main.remote", check=False), "")
+
     def test_a_dirty_repo_is_refused(self) -> None:
         (self.old / "wiki" / "concepts" / "draft.json").write_text("[]", encoding="utf-8")
         self.assertIn("커밋되지 않은 변경", self.wiki("adopt", str(self.old), cwd=self.tmp, expect=2).stderr)

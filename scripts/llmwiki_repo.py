@@ -442,6 +442,63 @@ def code_removals(target: Path, code: Path) -> tuple[list[str], list[str]]:
     return remove, sorted(keep)
 
 
+CODE_REMOTE = "llmwiki-code"
+
+
+def remote_key(url: str) -> str:
+    """git remote 주소를 비교용으로 맞춘다 — ssh·https·.git·대소문자 차이를 지운다."""
+    url = url.strip().rstrip("/")
+    url = re.sub(r"\.git$", "", url)
+    url = re.sub(r"^[a-z+]+://([^@/]+@)?", "", url)
+    url = re.sub(r"^[^@/]+@([^:/]+):", r"\1/", url)
+    return url.lower()
+
+
+def remotes(root: Path) -> dict[str, str]:
+    status, out = git(root, "remote", "-v")
+    found: dict[str, str] = {}
+    for line in out.splitlines() if status == 0 else []:
+        parts = line.split()
+        if len(parts) >= 2:
+            found.setdefault(parts[0], parts[1])
+    return found
+
+
+def code_remotes(target: Path, code: Path) -> list[dict[str, str]]:
+    """데이터 repo 가 될 target 의 remote 중 코드 repo 와 같은 저장소를 가리키는 것.
+
+    공개 저장소를 clone 해 그 안에 위키를 쌓은 옛 단일 repo 는 origin 이 코드 저장소다. 그대로 두면 데이터
+    repo 의 push 가 코드 저장소로 간다 — adopt 가 이름을 바꿔 push 대상에서 뺀다.
+    """
+    keys = {remote_key(url) for url in remotes(code).values()}
+    return [{"name": name, "url": url} for name, url in sorted(remotes(target).items())
+            if name != CODE_REMOTE and remote_key(url) in keys]
+
+
+def detach_code_remotes(target: Path, found: list[dict[str, str]]) -> list[dict[str, str]]:
+    """code_remotes 를 llmwiki-code 로 이름을 바꾸고, 지금 branch 가 그것을 따르면 private 로(없으면 끊는다)."""
+    done: list[dict[str, str]] = []
+    status, branch = git(target, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = branch.strip() if status == 0 else ""
+    status, upstream_remote = git(target, "config", "--get", f"branch.{branch}.remote")
+    upstream_remote = upstream_remote.strip() if status == 0 else ""
+    for i, item in enumerate(found):
+        new = CODE_REMOTE if i == 0 and CODE_REMOTE not in remotes(target) else f"{CODE_REMOTE}-{item['name']}"
+        status, out = git(target, "remote", "rename", item["name"], new)
+        if status != 0:
+            raise RuntimeError(f"git remote rename {item['name']} {new} 실패: {out}")
+        entry = {**item, "renamed": new}
+        if branch and item["name"] == upstream_remote:
+            if "private" in remotes(target) and git(target, "fetch", "-q", "private", branch, timeout=120.0)[0] == 0 \
+                    and git(target, "branch", "-u", f"private/{branch}")[0] == 0:
+                entry["branch_upstream"] = f"private/{branch}"
+            else:
+                git(target, "branch", "--unset-upstream")
+                entry["branch_upstream"] = ""
+        done.append(entry)
+    return done
+
+
 def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
     """adopt 가 할 일을 계산만 한다."""
     target = Path(target).expanduser().resolve()
@@ -499,7 +556,8 @@ def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
     return {"root": str(target), "code": str(code), "git": is_git, "remove": remove, "keep": keep, "move": moves,
             "untrack": untrack, "delete_derived": derived, "untrack_links": links, "create": create,
             "rewrite": [rel for rel in GUIDE_FILES if (target / rel).exists()], "local": local,
-            "conflicts": conflicts, "leftover": leftover}
+            "conflicts": conflicts, "leftover": leftover,
+            "code_remotes": code_remotes(target, code) if is_git else []}
 
 
 def page_versions(root: Path) -> list[str]:
@@ -621,6 +679,8 @@ def adopt(target: Path, *, code: Path | None = None, apply: bool = False, commit
     after_wiki, after_raw = wiki_digests(target), raw_listing(target)
     if after_wiki != before_wiki or after_raw != before_raw:
         raise RuntimeError("adopt 중 wiki/ 또는 raw/ 가 바뀌었다 — 여기서 멈춘다 (git 으로 되돌려 확인하라)")
+    if plan["code_remotes"]:
+        plan["code_remotes"] = detach_code_remotes(target, plan["code_remotes"])
     report = {**plan, "lock": lock, "guides": guides,
               "wiki_unchanged": {"files": len(after_wiki), "sha256_identical": True},
               "raw_unchanged": {"files": len(after_raw)}}
