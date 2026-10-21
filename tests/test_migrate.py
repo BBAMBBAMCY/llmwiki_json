@@ -44,6 +44,32 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(M.to_1_1(out), out)                        # 같은 판에 다시 걸어도 같다
 
 
+class VersionRuleTest(unittest.TestCase):
+    """VERSION(semver) 과 스키마 판의 대응. 스키마 판이 바뀌는 릴리스는 minor 이상을 올린다."""
+
+    def test_version_file_is_semver_and_maps_to_the_current_schema(self) -> None:
+        version = (REPO / "VERSION").read_text(encoding="utf-8").strip()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertEqual(P.code_version(REPO), version)
+        self.assertIn(version, M.RELEASES, "VERSION 을 올렸으면 RELEASES 에도 적는다")
+        self.assertEqual(M.RELEASES[version], P.SCHEMA_VERSION)
+        self.assertEqual(M.final_version(), P.SCHEMA_VERSION)
+        self.assertEqual(max(M.RELEASES, key=P.semver), version, "VERSION 이 가장 새 릴리스다")
+
+    def test_a_schema_change_bumps_at_least_the_minor_version(self) -> None:
+        releases = sorted(M.RELEASES.items(), key=lambda item: P.semver(item[0]))
+        for (old, old_schema), (new, new_schema) in zip(releases, releases[1:]):
+            with self.subTest(old=old, new=new):
+                self.assertGreaterEqual(P.schema_key(new_schema), P.schema_key(old_schema))
+                if new_schema != old_schema:
+                    self.assertGreater(P.semver(new)[:2], P.semver(old)[:2],
+                                       f"{old}→{new} 에서 schema {old_schema}→{new_schema} 인데 patch 만 올렸다")
+                    self.assertIn((old_schema, new_schema), M.MIGRATIONS)
+
+    def test_this_release_changed_the_schema(self) -> None:
+        self.assertGreaterEqual(P.semver(P.code_version(REPO)), (1, 1, 0))
+
+
 class MigrateCommandTest(SplitCase):
     def setUp(self) -> None:
         super().setUp()
