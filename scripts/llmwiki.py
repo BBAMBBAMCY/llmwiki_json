@@ -1618,7 +1618,7 @@ def resolve(ws: Workspace, selector: str) -> tuple[dict[str, Any], dict[str, Any
             raise WikiError(f"page not found: {selector}")
         return page, None
     page, block = find_block(ws, block_sel, page)
-    return page, block
+    return page, follow_current(page, block)
 
 
 def json_pointer(value: Any, pointer: str) -> Any:
@@ -1679,7 +1679,7 @@ def section(page: dict[str, Any], block_id: str) -> list[dict[str, Any]]:
         if block["kind"] == "heading" and block["data"].get("level", 2) <= level:
             break
         picked.append(block)
-    return picked
+    return [follow_current(page, block) for block in picked]
 
 
 # --------------------------------------------------------------------------- lint
@@ -2117,7 +2117,22 @@ def swap_block(page: dict[str, Any], old_id: str, news: list[dict[str, Any]],
         out["block_aliases"] = dict(sorted(aliases.items()))
     else:
         out.pop("block_aliases", None)
+    # 상충 판정이 현행 block 을 가리키고 있었으면(`resolution.current`) 그 가리킴도 새 id 로 잇는다.
+    for bid, block in blocks.items():
+        current = (block.get("resolution") or {}).get("current") if isinstance(block, dict) else None
+        if current and current not in blocks and aliases.get(current) in blocks:
+            blocks[bid] = {**block, "resolution": {**block["resolution"], "current": aliases[current]}}
     return out
+
+
+def follow_current(page: dict[str, Any], block: dict[str, Any]) -> dict[str, Any]:
+    """block 의 `resolution.current` 가 옛 id 면 지금 id 로 바꾼 사본 (정본은 그대로)."""
+    resolution = block.get("resolution") if isinstance(block.get("resolution"), dict) else None
+    current = (resolution or {}).get("current")
+    live = live_block_id(page, current) if current else None
+    if not current or not live or live == current:
+        return block
+    return {**block, "resolution": {**resolution, "current": live}}
 
 
 def fresh_block_id(page_id: str, fingerprint: str, taken: set[str]) -> str:

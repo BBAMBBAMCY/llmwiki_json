@@ -214,6 +214,39 @@ class EditKeepsWhatTheBodyDoesNotSayTest(EditCase):
         self.assertEqual([page["blocks"][b]["kind"] for b in result["inserted"]], ["paragraph"])
 
 
+class ResolutionCurrentFollowsTest(EditCase):
+    """상충 판정이 현행 block 을 id 로 가리키면(`resolution.current`), 그 block 을 고쳐도 가리킴이 끊기지 않는다."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.conflict = llmwiki.edit(self.ws, "alpha", self.first, "> ⚠️ 상충: 두 문서의 수치가 다르다.")["block_id"]
+        self.current = self.stored()["block_order"][2]                     # 둘째 문단이 현행 주장이다
+        page = self.stored()
+        page["blocks"][self.conflict]["resolution"] = {"status": "resolved", "current": self.current}
+        self.write_pages([page, self.stored("beta"), self.stored("gamma")])
+
+    def test_edit_repoints_the_judgement_at_the_new_id(self) -> None:
+        new_id = llmwiki.edit(self.ws, "alpha", self.current, "둘째 문단(고친 판).")["block_id"]
+        self.assertNotEqual(new_id, self.current)
+        page = self.stored()
+        self.assertEqual(page["blocks"][self.conflict]["resolution"]["current"], new_id)
+        self.assertEqual(llmwiki.validate_page(page, llmwiki.SchemaValidator.load(self.ws)), [])
+
+    def test_readers_follow_an_old_pointer(self) -> None:
+        """예전에 고쳐져 가리킴이 옛 id 로 남은 정본도 get · render --section · llmwiki_get 은 지금 id 를 보인다."""
+        new_id = llmwiki.edit(self.ws, "alpha", self.current, "둘째 문단(고친 판).")["block_id"]
+        page = self.stored()
+        page["blocks"][self.conflict]["resolution"]["current"] = self.current   # 옛 id 로 되돌린 정본
+        self.write_pages([page, self.stored("beta"), self.stored("gamma")])
+        self.assertEqual(llmwiki.resolve(self.ws, f"alpha#{self.conflict}")[1]["resolution"]["current"], new_id)
+        heading = self.stored()["block_order"][0]
+        shown = [b for b in llmwiki.section(self.stored(), heading) if b["id"] == self.conflict]
+        self.assertEqual(shown[0]["resolution"]["current"], new_id)
+        out = ctx.get_page(self.root, "alpha", blocks=[self.conflict], mode="blocks")
+        self.assertEqual(out["blocks"][0]["resolution"]["current"], new_id)
+        self.assertEqual(self.stored()["blocks"][self.conflict]["resolution"]["current"], self.current)  # 정본은 그대로
+
+
 class EditGuardsTest(EditCase):
     def test_an_unclosed_fence_is_refused(self) -> None:
         with self.assertRaisesRegex(llmwiki.WikiError, "닫히지 않은"):

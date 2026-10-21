@@ -1034,7 +1034,12 @@ def resolve_blocks(page: dict[str, Any],
             continue
         if hit not in seen:
             seen.add(hit)
-            found.append(blocks[hit])
+            block = blocks[hit]
+            # 상충 판정이 가리키는 현행 block 이 edit 로 새 id 를 받았으면 그 id 로 보여 준다
+            current = (block.get("resolution") or {}).get("current") if isinstance(block.get("resolution"), dict) else None
+            if current and current not in blocks and aliases.get(current) in blocks:
+                block = {**block, "resolution": {**block["resolution"], "current": aliases[current]}}
+            found.append(block)
     return found, missing
 
 
