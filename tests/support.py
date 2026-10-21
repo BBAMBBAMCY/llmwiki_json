@@ -49,7 +49,7 @@ def make_page(slug: str, body: str, *, type: str = "concept", projects: Iterable
     title = next((b["data"]["text"] for b in blocks.values()
                   if b["kind"] == "heading" and b["data"].get("level") == 1), slug)
     page = {
-        "schema_version": "1.0", "id": page_id, "slug": slug, "title": title, "type": type,
+        "schema_version": llmwiki.SCHEMA_VERSION, "id": page_id, "slug": slug, "title": title, "type": type,
         "created": created, "updated": created, "tags": list(tags), "projects": list(projects),
         "sources": list(sources), "raw_ref": None, "summary": summary,
         "blocks": blocks, "block_order": order,

@@ -58,7 +58,8 @@ except ImportError:  # run as a script or loaded from its file path
 
 DEFAULT_ROOT = P.CODE_ROOT
 ENV_ROOT = P.ENV_ROOT
-SCHEMA_VERSION = P.SCHEMA_VERSION
+SCHEMA_VERSION = P.SCHEMA_VERSION      # 정본 page 의 판 — llmwiki_paths 한 곳에만 적는다
+ARTIFACT_VERSION = "1.0"               # map/graph/revision 같은 파생물의 형식 판 (page 스키마와 따로 간다)
 ENV_NOW = "LLMWIKI_NOW"
 SEARCH_INDEX = search_index.DB_NAME
 
@@ -653,7 +654,7 @@ def page_from_markdown(ws: Workspace, path: Path, page_type: str | None = None,
     vocabulary = {tag_key(tag): tag for tag in ws.load_tag_vocabulary() or ()}
     keywords = string_list(meta.get("keywords"))
     return {
-        "schema_version": "1.0", "id": page_id, "slug": slug, "title": title,
+        "schema_version": SCHEMA_VERSION, "id": page_id, "slug": slug, "title": title,
         "type": page_type or meta.get("type") or "source",
         "created": meta.get("created") or stamp, "updated": meta.get("updated") or stamp,
         "tags": canonical_tags(meta.get("tags"), vocabulary),
@@ -779,8 +780,9 @@ def validate_page(page: dict[str, Any], validator: SchemaValidator | None = None
     if errors:
         return errors
 
-    if page["schema_version"] != "1.0":
-        errors.append(f"{pid}: schema_version must be 1.0")
+    if page["schema_version"] != SCHEMA_VERSION:
+        errors.append(f"{pid}: schema_version must be {SCHEMA_VERSION} (found {page['schema_version']!r}"
+                      f" — `llmwiki migrate` 로 판을 맞춘다)")
     if not str(pid).startswith("page:"):
         errors.append(f"{pid}: invalid page id")
     if pid != f"page:{page['slug']}":
@@ -1118,8 +1120,8 @@ def _project_records(records: list[dict[str, Any]], groups: dict[str, Any]) -> d
 
     return {
         "catalog.json": catalog,
-        "map.json": {"schema_version": "1.0", "pages": map_pages, "blocks": map_blocks},
-        "graph.json": {"schema_version": "1.0", "nodes": nodes, "edges": edges, "groups": groups},
+        "map.json": {"schema_version": ARTIFACT_VERSION, "pages": map_pages, "blocks": map_blocks},
+        "graph.json": {"schema_version": ARTIFACT_VERSION, "nodes": nodes, "edges": edges, "groups": groups},
         "routes.json": routes,
         "stats.json": {"pages": len(records), "blocks": sum(len(r["blocks"]) for r in records),
                        "edges": len(edges),
@@ -1422,7 +1424,8 @@ def build(ws: Workspace, *, changed: Iterable[str] | None = None, full: bool = F
                              "map_root": new_root, "heading_paths": bool(heading_paths),
                              "files": dict(sorted(on_disk.items()))})
     else:
-        payloads["revision.json"] = {"schema_version": "1.0", "revision": revision, "search_root": built["digest"]}
+        payloads["revision.json"] = {"schema_version": ARTIFACT_VERSION, "revision": revision,
+                                     "search_root": built["digest"]}
         for name, data in payloads.items():
             dump(ws.index / name, data, pretty=True)
             dump(ws.public / name, data)

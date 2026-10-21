@@ -33,9 +33,23 @@ class ValidatePageTest(WorkspaceCase):
         page["type"] = "nope"
         page["created"] = "2026/08/19"
         errors = " ".join(self.check(page))
-        self.assertIn("schema_version must be 1.0", errors)
+        self.assertIn(f"schema_version must be {llmwiki.SCHEMA_VERSION}", errors)
         self.assertIn("invalid type nope", errors)
         self.assertIn("created must be YYYY-MM-DD", errors)
+
+    def test_schema_version_lives_in_one_constant(self) -> None:
+        """page 의 판은 llmwiki_paths.SCHEMA_VERSION 하나에서 온다 — validate·ingest·스키마 파일에 따로 적지 않는다."""
+        paths = (REPO / "scripts" / "llmwiki_paths.py").read_text(encoding="utf-8")
+        self.assertRegex(paths, r'(?m)^SCHEMA_VERSION = "\d+\.\d+"$')
+        source = (REPO / "scripts" / "llmwiki.py").read_text(encoding="utf-8")
+        self.assertIn("SCHEMA_VERSION = P.SCHEMA_VERSION", source)
+        self.assertNotRegex(source, r'schema_version"\]? ?!= ?"\d')
+        self.assertNotRegex(source, r'"schema_version": "\d')
+        schema = json.loads((REPO / "tools" / "schema" / "page.schema.json").read_text(encoding="utf-8"))
+        self.assertNotIn("const", schema["properties"]["schema_version"])
+        page = make_page("alpha", "# Alpha\n")
+        self.assertEqual(page["schema_version"], llmwiki.SCHEMA_VERSION)
+        self.assertFalse(only(self.check(page), "schema_version"))
 
     def test_id_must_track_slug(self) -> None:
         page = make_page("alpha", "# Alpha\n")
