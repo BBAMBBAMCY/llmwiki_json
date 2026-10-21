@@ -6,7 +6,9 @@ direct page/block get, md/html render, lint and append-only log.
 
 Determinism contract
 --------------------
-`build` is a pure function of (wiki pages, tools/config/groups.json).
+`build` is a pure function of (wiki pages, groups.json). groups.json is read
+from the data's config (`tools/config/` in a single repo, `config/` in a data
+repo with `llmwiki.lock`), falling back to the code repo's default.
 Running it twice on the same input produces byte-identical artifacts:
 every collection is emitted in a stable sort order, every path stored in
 an artifact is repo-relative, and layout coordinates are rounded. The
@@ -251,7 +253,8 @@ class Workspace:
         return json.loads(self.groups_path.read_text(encoding="utf-8"))
 
     def load_tag_vocabulary(self) -> list[str] | None:
-        """`tools/config/tags.json` 의 허용 tag (선택). 파일이 없으면 None — 어휘를 검사하지 않는다."""
+        """위키 설정의 `tags.json` 허용 tag (선택). 파일이 없으면 None — 어휘를 검사하지 않는다.
+        분리 모드에서 데이터 쪽에 없으면 코드 repo 의 것을 빌려 쓰지 않는다 (위키마다 다른 어휘다)."""
         if not self.tags_path.exists():
             return None
         value = json.loads(self.tags_path.read_text(encoding="utf-8"))
@@ -1728,7 +1731,7 @@ def lint(ws: Workspace) -> tuple[list[str], list[str]]:
             warnings.append(f"{page['id']}: orphan (no inbound or outbound links)")
 
     warnings.extend(compile_warnings(pages, lookup))
-    warnings.extend(tag_warnings(pages, ws.load_tag_vocabulary()))
+    warnings.extend(tag_warnings(pages, ws.load_tag_vocabulary(), ws.rel(ws.tags_path)))
     warnings.extend(stale_index(ws))
     return sorted(dict.fromkeys(errors)), sorted(dict.fromkeys(warnings))
 
@@ -1826,7 +1829,8 @@ def sorted_tags(page: dict[str, Any], spellings: dict[str, str],
     return listed, rest
 
 
-def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None) -> list[str]:
+def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None,
+                 source: str = "tools/config/tags.json") -> list[str]:
     """한 tag 의 여러 표기, 허용 목록 밖의 tag. 목록이 없으면 표기만 본다."""
     spellings = tag_spellings(pages, vocabulary)
     allowed = {tag_key(tag) for tag in vocabulary} if vocabulary is not None else None
@@ -1837,7 +1841,7 @@ def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None) -> l
             if spellings.get(key, tag) != tag:
                 warnings.append(f"{page['id']}: tag '{tag}' 는 '{spellings[key]}' 의 변형이다 — repair 가 한 표기로 모은다")
             elif allowed is not None and key not in allowed:
-                warnings.append(f"{page['id']}: tag '{tag}' 가 tools/config/tags.json 에 없다 — "
+                warnings.append(f"{page['id']}: tag '{tag}' 가 {source} 에 없다 — "
                                 "목록에 더하거나 repair 로 keywords 에 옮긴다")
     return warnings
 

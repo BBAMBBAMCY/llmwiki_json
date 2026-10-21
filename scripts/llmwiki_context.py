@@ -12,11 +12,12 @@
   `fallback`). 색인 경로에서도 hit page 의 정본 sha 를 대조해 바뀐 page 는 정본을 다시 읽는다.
 - 주입 형식은 P/B/E 부분 그래프(`llmwiki_index.render_graph`). block 본문은 앞 320자가 아니라
   질문과 겹치는 행을 고르고, 낡은 page(supersedes 로 대체됨) 는 `sup→head` 한 줄만 싣는다.
-- 무주입 문턱은 **기본 꺼짐**. 위키 설정(`tools/config/context.json` 의 `silence`)이나 `LLMWIKI_CONTEXT_SILENCE` 로 켠다 (아래).
+- 무주입 문턱은 **기본 꺼짐**. 위키 설정(`context.json` 의 `silence` — 단일 repo `tools/config/`, 분리 모드
+  `config/`)이나 `LLMWIKI_CONTEXT_SILENCE` 로 켠다 (아래).
 - `llmwiki_get` 은 색인을 주소 힌트로만 쓰고 최종 object 는 정본 파일 하나에서 읽는다.
 - 어떤 오류가 나도 질문을 막지 않는다(fail-open: stdout 비우고 exit 0). 워치독 6초.
 - 자격증명으로 보이는 문자열은 색인에도 출력에도 남기지 않는다.
-- 어느 cwd 에서 실행해도 이 파일 위치 기준 절대경로로 저장소를 찾는다.
+- 데이터 root 는 llmwiki_paths 규칙(`--root` → `LLMWIKI_ROOT` → 위로 찾은 `llmwiki.lock` → 이 저장소)으로 찾는다.
 
 환경변수
 --------

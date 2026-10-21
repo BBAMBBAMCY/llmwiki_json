@@ -94,5 +94,54 @@ class RootPriorityTest(SplitCase):
         self.assertEqual(layout["viewer_data"], str(self.data / ".llmwiki" / "viewer-data"))
 
 
+class ConfigLocationTest(SplitCase):
+    def test_split_reads_data_config_then_code_defaults(self) -> None:
+        paths = json.loads(self.wiki("paths").stdout)
+        self.assertEqual(paths["config"], str(self.data / "config"))
+        # 데이터에 groups.json 이 없으면 코드의 기본값으로 build 한다
+        self.write_data_page(make_page("a", "# A\n\n본문.\n", projects=["alpha"]))
+        self.wiki("build")
+        graph = json.loads((self.data / ".llmwiki" / "viewer-data" / "graph.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph["groups"]["project"]["alpha"]["label"], "Alpha")
+        # 데이터의 groups.json 이 생기면 그것을 쓴다
+        own = json.loads((self.code / "tools" / "config" / "groups.json").read_text(encoding="utf-8"))
+        own["project"]["alpha"]["label"] = "데이터 쪽 Alpha"
+        (self.data / "config" / "groups.json").write_text(json.dumps(own, ensure_ascii=False), encoding="utf-8")
+        self.wiki("build")
+        graph = json.loads((self.data / ".llmwiki" / "viewer-data" / "graph.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph["groups"]["project"]["alpha"]["label"], "데이터 쪽 Alpha")
+
+    def test_vocabulary_and_glossary_never_fall_back_to_the_code_repo(self) -> None:
+        """tags.json·glossary.json 은 위키마다 다른 내용이다 — 남의 어휘로 검사하면 안 된다."""
+        (self.code / "tools" / "config" / "tags.json").write_text('{"tags": ["only-this"]}', encoding="utf-8")
+        self.write_data_page(make_page("a", "# A\n\n본문.\n", tags=["free-tag"], projects=["alpha"]))
+        out = self.wiki("lint", "--json", expect=None)
+        self.assertNotIn("tags.json", out.stdout)
+        (self.data / "config" / "tags.json").write_text('{"tags": ["only-this"]}', encoding="utf-8")
+        out = self.wiki("lint", "--json", expect=None)
+        self.assertIn("free-tag", out.stdout)
+
+    def test_context_settings_come_from_the_data_config(self) -> None:
+        self.write_data_page(make_page("pinned", "# Pinned\n\n늘 붙는 page 의 본문이다.\n", projects=["alpha"]))
+        (self.data / "config" / "context.json").write_text('{"always": ["pinned"]}', encoding="utf-8")
+        self.wiki("build")
+        out = self.run_code("llmwiki_context.py", "context", "전혀 관계없는 질문 qqzz")
+        self.assertIn("page:pinned", out.stdout)
+
+    def test_ingest_registers_new_project_groups_in_the_data_config(self) -> None:
+        (self.data / "raw" / "note.md").write_text("# Note\n\n새 프로젝트의 노트.\n", encoding="utf-8")
+        before = (self.code / "tools" / "config" / "groups.json").read_bytes()
+        self.wiki("ingest", "raw/note.md", "--type", "source", "--project", "brandnew")
+        groups = json.loads((self.data / "config" / "groups.json").read_text(encoding="utf-8"))
+        self.assertIn("brandnew", groups["project"])
+        self.assertEqual((self.code / "tools" / "config" / "groups.json").read_bytes(), before)
+
+    def test_single_repo_mode_keeps_tools_config(self) -> None:
+        (self.data / "llmwiki.lock").unlink()
+        paths = json.loads(self.wiki("--root", str(self.data), "paths").stdout)
+        self.assertEqual(paths["mode"], "single")
+        self.assertEqual(paths["config"], str(self.data / "tools" / "config"))
+
+
 if __name__ == "__main__":
     unittest.main()
