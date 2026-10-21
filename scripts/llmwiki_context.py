@@ -1885,7 +1885,9 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
           if shim["exists"] else f"{shim['path']} 없음 — install 이 놓는다")
 
     docs = load_corpus(root)
-    check("corpus", bool(docs), f"{len(docs)} pages")
+    # 빈 위키는 새로 설치한 상태다 — 실패가 아니다. 내용으로 하는 검사(probe-*)는 첫 ingest 뒤에 돈다.
+    check("corpus", True, f"{len(docs)} pages" if docs else "빈 위키 — 첫 소스를 ingest 하면 내용 검사(probe)도 돈다",
+          warn=not docs)
 
     expected = hook_command(python, root=data_root_of(root))
     for name in clients:
@@ -1926,9 +1928,13 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
     # probe 는 두 검사로 나눈다 — 검색이 page 를 찾는지, 그 결과가 본문(B)까지 주입되는지.
     # 하나가 실패하면 어느 단계가 문제인지 detail 로 알 수 있다.
     query, expected = probe_query(docs)
-    check("probe-query", bool(query),
-          f"query={query!r} expect={expected}" if query
-          else "본문 block(paragraph/list/table, 40자 이상)이 있는 page 가 없다")
+    if not query:
+        # 빈 위키이거나 본문 block 이 짧은 page 뿐이다 — 물어볼 문장이 없으니 건너뛴다(실패로 치지 않는다).
+        why = "빈 위키" if not docs else "본문 block(paragraph/list/table, 40자 이상)이 있는 page 가 아직 없다"
+        for name in ("probe-query", "probe-search", "probe-injects"):
+            check(name, True, f"건너뜀 — {why}", warn=True)
+    else:
+        check("probe-query", True, f"query={query!r} expect={expected}")
     found: dict[str, Any] = {}
     if query:
         try:
@@ -1936,11 +1942,12 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
         except Exception as exc:  # noqa: BLE001 - 검증은 절대 예외로 죽지 않는다
             found = {"error": type(exc).__name__, "results": []}
     ids = [r.get("id") for r in found.get("results") or []]
-    check("probe-search", bool(ids),
-          f"mode={found.get('mode', '?')} hits={len(ids)} "
-          f"expected_hit={expected in ids} top={ids[0] if ids else None}"
-          + (f" fallback={found['fallback']}" if found.get("fallback") else "")
-          + (f" error={found['error']}" if found.get("error") else ""))
+    if query:
+        check("probe-search", bool(ids),
+              f"mode={found.get('mode', '?')} hits={len(ids)} "
+              f"expected_hit={expected in ids} top={ids[0] if ids else None}"
+              + (f" fallback={found['fallback']}" if found.get("fallback") else "")
+              + (f" error={found['error']}" if found.get("error") else ""))
 
     payload = json.dumps({"prompt": query, "cwd": str(root),
                           "hook_event_name": HOOK_EVENT}, ensure_ascii=False)
@@ -1959,11 +1966,12 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
         except (ValueError, KeyError, TypeError):
             body = ""
     has_block = any(line.startswith("B ") for line in body.splitlines())
-    check("probe-injects", bool(body) and has_block,
-          f"mode={stats.get('mode', '?')} reason={stats.get('reason', '?')} "
-          f"bytes={stats.get('bytes', 0)} expected_page={expected in (stats.get('pages') or [])} "
-          f"block_lines={has_block}"
-          + (f" fallback={stats['fallback']}" if stats.get("fallback") else ""))
+    if query:
+        check("probe-injects", bool(body) and has_block,
+              f"mode={stats.get('mode', '?')} reason={stats.get('reason', '?')} "
+              f"bytes={stats.get('bytes', 0)} expected_page={expected in (stats.get('pages') or [])} "
+              f"block_lines={has_block}"
+              + (f" fallback={stats['fallback']}" if stats.get("fallback") else ""))
 
     noise = json.dumps({"prompt": "zzqq xxyy vvww 1234567", "cwd": str(root),
                         "hook_event_name": HOOK_EVENT}, ensure_ascii=False)
