@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
-from tests.support import SplitCase, copy_code, git, git_init, install_fake_schema
+from tests.support import SplitCase, copy_code, git, git_init, install_fake_schema, llmwiki_context as ctx
 
 
 class UpdateCase(SplitCase):
@@ -194,6 +196,52 @@ class UpdateStopTest(UpdateCase):
         self.assertEqual(self.page()["schema_version"], "1.1")
         self.assertEqual(git(self.data, "rev-parse", "HEAD"), self.data_head)
         self.assertEqual(git(self.data, "status", "--porcelain"), "")
+
+
+class EndToEndTest(UpdateCase):
+    """사용자가 하는 그대로: `llmwiki` 명령만으로 init → ingest → (upstream 새 판) → update --yes → hook 주입."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        shutil.rmtree(self.data)                                   # UpdateCase 가 만든 것은 쓰지 않는다
+        self.bin = self.tmp / "bin"
+        environ = {"LLMWIKI_SHIM_DIR": str(self.bin)}
+        self.run_code("llmwiki.py", "shim", "install", "--python", sys.executable, "--data", str(self.data),
+                      "--posix", cwd=self.tmp, env=environ)
+        self.llmwiki = self.bin / "llmwiki"
+
+    def sh(self, *argv: str, cwd: Path, expect: int = 0) -> str:
+        env = {k: v for k, v in os.environ.items() if k not in ("LLMWIKI_ROOT", "LLMWIKI_DEFAULT_ROOT")}
+        env.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"})
+        proc = subprocess.run([str(self.llmwiki), *argv], cwd=str(cwd), capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, expect, f"llmwiki {argv}\n{proc.stdout}\n{proc.stderr}")
+        return proc.stdout
+
+    def test_init_ingest_release_update_inject(self) -> None:
+        self.sh("init", str(self.data), cwd=self.tmp)
+        (self.data / "raw" / "orbit.md").write_text(
+            "# 궤도 규칙\n\n위성 정비 창은 매주 화요일 새벽 quasarlantern 절차로 연다.\n", encoding="utf-8")
+        self.sh("ingest", "raw/orbit.md", "--type", "source", "--project", "ops", cwd=self.data)
+        git(self.data, "add", "-A")
+        git(self.data, "commit", "-qm", "궤도 규칙 소스")
+        new_head = self.release([("1.1", "1.2")], "1.2.0")
+        out = self.sh("update", "--yes", cwd=self.tmp)            # 데이터 repo 밖에서도 shim 의 기본 데이터로 간다
+        self.assertIn("schema 1.1→1.2", out)
+        self.assertEqual(git(self.code, "rev-parse", "HEAD"), new_head)
+        page = json.loads((self.data / "wiki" / "sources" / "orbit.json").read_text(encoding="utf-8"))
+        self.assertEqual(page["schema_version"], "1.2")
+        self.assertEqual(git(self.data, "status", "--porcelain"), "")
+        self.assertIn("갱신, schema 1.1→1.2", git(self.data, "log", "-1", "--format=%s"))
+        # 설치기가 박는 그 hook 명령으로, 사용자 프로젝트(아무 cwd)에서 주입한다
+        command = ctx.hook_command(sys.executable, self.code / "scripts" / "llmwiki_context.py",
+                                   windows=False, root=self.data)
+        payload = json.dumps({"prompt": "위성 정비 창 quasarlantern 절차", "hook_event_name": "UserPromptSubmit"})
+        hook = subprocess.run(["sh", "-c", command], input=payload, capture_output=True, text=True,
+                              cwd=str(self.tmp), env={k: v for k, v in os.environ.items() if k != "LLMWIKI_ROOT"})
+        body = json.loads(hook.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("orbit", body)
+        self.assertIn("quasarlantern", body)
 
 
 if __name__ == "__main__":
