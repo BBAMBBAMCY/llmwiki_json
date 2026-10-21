@@ -140,5 +140,55 @@ class GuideTest(SplitCase):
             self.assertIn("`llmwiki ", text)
 
 
+class InitTest(SplitCase):
+    git_code = True
+
+    def test_init_creates_a_committed_data_repo_skeleton(self) -> None:
+        target = self.tmp / "my-wiki"
+        report = json.loads(self.wiki("init", str(target), cwd=self.tmp).stdout)
+        self.assertEqual(report["root"], str(target))
+        for rel in ("wiki/sources", "wiki/entities", "wiki/concepts", "wiki/syntheses", "wiki/projects", "raw",
+                    "config"):
+            self.assertTrue((target / rel).is_dir(), rel)
+        for rel in ("LOCAL.md", "llmwiki.lock", ".gitignore", "CLAUDE.md", "AGENTS.md", "config/groups.json"):
+            self.assertTrue((target / rel).is_file(), rel)
+        ignore = (target / ".gitignore").read_text(encoding="utf-8").splitlines()
+        for line in (".llmwiki/", ".claude/skills", ".codex/skills"):
+            self.assertIn(line, ignore)
+        lock = json.loads((target / "llmwiki.lock").read_text(encoding="utf-8"))
+        self.assertEqual((lock["schema_version"], lock["code_commit"], lock["code_path"]),
+                         (P.SCHEMA_VERSION, self.code_commit, str(self.code)))
+        groups = json.loads((target / "config" / "groups.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(groups["project"]), ["multi", "ungrouped"])     # 데모 프로젝트는 따라오지 않는다
+        self.assertTrue((target / ".claude" / "skills").is_symlink())
+        # git: 커밋 하나, 깨끗한 트리 (skills 링크와 파생물은 추적하지 않는다)
+        self.assertEqual(git(target, "rev-list", "--count", "HEAD"), "1")
+        self.assertEqual(git(target, "status", "--porcelain"), "")
+        tracked = git(target, "ls-files").splitlines()
+        self.assertIn("llmwiki.lock", tracked)
+        self.assertIn("CLAUDE.md", tracked)
+        self.assertNotIn(".claude/skills", tracked)
+        # 바로 쓸 수 있다 — 위에서 찾은 lock 으로 root 를 정하고 파생물은 .llmwiki/ 에
+        (target / "raw" / "note.md").write_text("# Note\n\n첫 소스의 본문.\n", encoding="utf-8")
+        self.wiki("ingest", "raw/note.md", "--type", "source", "--project", "first", cwd=target)
+        self.assertTrue((target / "wiki" / "sources" / "note.json").is_file())
+        self.assertTrue((target / ".llmwiki" / "index" / "search.sqlite").is_file())
+        self.assertEqual(self.wiki("validate", cwd=target).returncode, 0)
+        self.assertEqual(git(self.code, "status", "--porcelain"), "")
+
+    def test_init_refuses_a_non_empty_dir_and_the_code_repo(self) -> None:
+        busy = self.tmp / "busy"
+        busy.mkdir()
+        (busy / "x.txt").write_text("x", encoding="utf-8")
+        self.assertIn("비어 있지 않다", self.wiki("init", str(busy), cwd=self.tmp, expect=2).stderr)
+        self.assertIn("코드 repo 안", self.wiki("init", str(self.code / "data"), cwd=self.tmp, expect=2).stderr)
+
+    def test_no_git_skips_the_commit(self) -> None:
+        target = self.tmp / "plain"
+        self.wiki("init", str(target), "--no-git", cwd=self.tmp)
+        self.assertFalse((target / ".git").exists())
+        self.assertTrue((target / "llmwiki.lock").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()

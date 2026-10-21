@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import filecmp
+import json
 import os
 import re
 import shutil
@@ -197,3 +198,77 @@ def sync_skills(link: Path, target: Path, *, dry_run: bool = False) -> str:
     shutil.copytree(target, link, ignore=shutil.ignore_patterns("__pycache__"))
     (link / COPY_MARKER).write_text(f"{target}\n", encoding="utf-8")
     return "copied"
+
+
+# --------------------------------------------------------------------------- init
+WIKI_DIRS = ("sources", "entities", "concepts", "syntheses", "projects")
+LOCAL_TEMPLATE = """# 이 위키만의 규칙
+
+이 파일은 이 데이터 repo 에만 해당하는 규칙을 적는 자리다. `CLAUDE.md`·`AGENTS.md` 는 코드 repo 의
+`INIT.md` 뒤에 이 파일을 붙여 만드는 생성 파일이라, 규칙을 더하거나 바꾸려면 여기를 고친다
+(`llmwiki guides` 또는 다음 `llmwiki update` 가 다시 만든다).
+
+- (예) 회의록 소스는 `raw/meetings/` 에 둔다.
+"""
+# 새 위키의 groups.json — 코드 기본값에서 데모 프로젝트를 뺀 것. 프로젝트 그룹은 ingest 가 처음 만날 때 등록한다.
+GENERIC_GROUPS = ("multi", "ungrouped")
+
+
+def default_groups(code: Path | None = None) -> dict[str, Any]:
+    code = (code or P.CODE_ROOT).resolve()
+    value = json.loads((code / "tools" / "config" / "groups.json").read_text(encoding="utf-8"))
+    project = value.get("project") if isinstance(value.get("project"), dict) else {}
+    return {**value, "project": {k: v for k, v in project.items() if k in GENERIC_GROUPS}}
+
+
+def gitignore_lines(existing: str) -> str:
+    """데이터 repo 의 .gitignore 에 파생물·skills 링크 줄을 더한다 (이미 있으면 그대로)."""
+    lines = existing.splitlines()
+    missing = [line for line in DATA_GITIGNORE if line not in lines]
+    if not missing:
+        return existing
+    block = ["# llmwiki 파생물과 기계마다 다른 skills 링크 (llmwiki init/adopt 가 넣는다)", *missing]
+    return ("\n".join(lines).rstrip("\n") + "\n\n" if existing.strip() else "") + "\n".join(block) + "\n"
+
+
+def init_data_repo(target: Path, *, code: Path | None = None, use_git: bool = True,
+                   message: str = "llmwiki 데이터 repo 를 시작한다") -> dict[str, Any]:
+    """빈 데이터 repo 골격: wiki/ raw/ config/ LOCAL.md llmwiki.lock .gitignore, 생성 지침, 첫 커밋."""
+    target = Path(target).expanduser().resolve()
+    code = (code or P.CODE_ROOT).resolve()
+    if target == code or code in target.parents:
+        raise ValueError(f"{target} 는 코드 repo 안이다 — 데이터 repo 는 코드 repo 밖에 둔다")
+    if target.exists() and any(p.name != ".git" for p in target.iterdir()):
+        raise ValueError(f"{target} 가 비어 있지 않다 — 기존 저장소를 데이터 repo 로 바꾸려면 `llmwiki adopt` 를 쓴다")
+    created: list[str] = []
+    for sub in WIKI_DIRS:
+        keep = target / "wiki" / sub / ".gitkeep"
+        keep.parent.mkdir(parents=True, exist_ok=True)
+        keep.write_text("", encoding="utf-8")
+        created.append(f"wiki/{sub}/")
+    (target / "raw").mkdir(parents=True, exist_ok=True)
+    (target / "raw" / ".gitkeep").write_text("", encoding="utf-8")
+    (target / "config").mkdir(parents=True, exist_ok=True)
+    (target / "config" / "groups.json").write_text(
+        json.dumps(default_groups(code), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (target / "LOCAL.md").write_text(LOCAL_TEMPLATE, encoding="utf-8")
+    (target / ".gitignore").write_text(gitignore_lines(""), encoding="utf-8")
+    created += ["raw/", "config/groups.json", "LOCAL.md", ".gitignore"]
+    lock = refresh_lock(target, schema_version=P.SCHEMA_VERSION, code=code)
+    created.append(P.LOCK_NAME)
+    guides = sync_guides(target, code)
+    created += list(GUIDE_FILES)
+    report: dict[str, Any] = {"root": str(target), "created": created, "lock": lock, "guides": guides}
+    if use_git:
+        if not (target / ".git").exists():
+            status, out = git(target, "init", "-q", "-b", "main")
+            if status != 0:   # 옛 git 은 -b 를 모른다
+                status, out = git(target, "init", "-q")
+            if status != 0:
+                raise RuntimeError(f"git init 실패: {out}")
+        git(target, "add", "-A")
+        status, out = git(target, "commit", "-q", "-m", message)
+        if status != 0:
+            raise RuntimeError(f"첫 커밋 실패 (git user.name·user.email 을 확인하라): {out}")
+        report["commit"] = git(target, "rev-parse", "HEAD")[1]
+    return report

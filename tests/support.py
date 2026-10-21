@@ -146,7 +146,7 @@ class WorkspaceCase(unittest.TestCase):
 
 # --------------------------------------------------------------------------- 두 repo 운영
 # 코드 repo 에 실리는 것. 분리 모드 시험은 이것만 임시 코드 repo 로 복사한다 — 데모 위키는 따라가지 않는다.
-CODE_PATHS = ("scripts", "tools/schema", "tools/config", "tools/parity", "VERSION", "INIT.md", ".skills")
+CODE_PATHS = ("scripts", "tools/schema", "tools/config", "tools/parity", "VERSION", "INIT.md", ".skills", ".gitignore")
 
 
 def copy_code(dest: Path) -> Path:
@@ -216,6 +216,9 @@ class SplitCase(unittest.TestCase):
         """임시 코드 repo 의 scripts/<script> 를 돌린다. 기본 cwd 는 데이터 repo (lock 으로 root 를 찾는다)."""
         environ = {k: v for k, v in os.environ.items() if k not in ("LLMWIKI_ROOT", "LLMWIKI_DEFAULT_ROOT")}
         environ[llmwiki.ENV_NOW] = FROZEN_NOW
+        for key, value in (("GIT_AUTHOR_NAME", "test"), ("GIT_AUTHOR_EMAIL", "test@example.invalid"),
+                           ("GIT_COMMITTER_NAME", "test"), ("GIT_COMMITTER_EMAIL", "test@example.invalid")):
+            environ.setdefault(key, value)
         environ.update(env or {})
         proc = subprocess.run([sys.executable, str(self.code / "scripts" / script), *argv],
                               cwd=str(cwd or self.data), capture_output=True, text=True,

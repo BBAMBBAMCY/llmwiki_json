@@ -2830,6 +2830,11 @@ def build_parser() -> argparse.ArgumentParser:
     mig.add_argument("--json", action="store_true", dest="as_json")
     mig.add_argument("--fixtures", action="store_true")
 
+    ini = sub.add_parser("init", help="create an empty data repo (wiki/ raw/ config/ LOCAL.md llmwiki.lock) "
+                                       "with its first commit")
+    ini.add_argument("dir")
+    ini.add_argument("--no-git", action="store_true", help="do not git init / commit")
+
     gd = sub.add_parser("guides", help="data repo: regenerate CLAUDE.md/AGENTS.md (INIT.md + LOCAL.md) and the "
                                          "skills links (rewrites nothing that is already current)")
     gd.add_argument("--dry-run", action="store_true")
@@ -2918,6 +2923,11 @@ def run(argv: list[str] | None = None) -> int:
             emit(report)
         else:
             print_migrate(report)
+    elif command == "init":
+        try:
+            emit(R.init_data_repo(Path(args.dir), use_git=not args.no_git))
+        except (ValueError, RuntimeError) as exc:
+            raise WikiError(str(exc)) from exc
     elif command == "guides":
         if not ws.split:
             raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — 단일 repo 의 CLAUDE.md 는 손으로 둔다")
