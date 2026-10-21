@@ -2663,11 +2663,11 @@ def open_search_index(ws: Workspace) -> "search_index.Index":
             fresh = (idx.revision and idx.revision == search_index.read_revision(ws.root)
                      and search_index.newest_mtime(ws.pages_dir) <= ws.search_db.stat().st_mtime)
             if fresh:
-                return idx
+                return search_index.configure(idx, ws.root)
             idx.close()
         except (OSError, ValueError, sqlite3.Error):
             pass
-    return search_index.build_memory(ws.load_documents(), glossary=glossary)
+    return search_index.configure(search_index.build_memory(ws.load_documents(), glossary=glossary), ws.root)
 
 
 def query(ws: Workspace, text: str, limit: int = 10) -> list[dict[str, Any]]:

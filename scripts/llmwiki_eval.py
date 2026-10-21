@@ -83,7 +83,7 @@ def evaluate(root: Path, questions: list[dict[str, Any]], *, max_bytes: int = C.
     if not docs:
         raise SystemExit(f"{root}/wiki 에 page 가 없다")
     words = IDX.load_glossary(root) if glossary else None
-    idx = IDX.build_memory(docs, glossary=words)
+    idx = IDX.configure(IDX.build_memory(docs, glossary=words), root)
     rows: list[dict[str, Any]] = []
     try:
         for item in questions:

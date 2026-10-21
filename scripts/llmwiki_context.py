@@ -489,7 +489,7 @@ def open_index(root: Path) -> tuple[IDX.Index | None, str]:
     if not path.is_file():
         return None, "no-index"
     try:
-        idx = IDX.open_ro(path, glossary=IDX.load_glossary(root))
+        idx = IDX.configure(IDX.open_ro(path, glossary=IDX.load_glossary(root)), root)
     except Exception as exc:  # noqa: BLE001 - sqlite 오류·lock·schema 불일치 전부 스캔으로
         return None, f"open-error:{type(exc).__name__}"
     try:
@@ -548,7 +548,8 @@ def open_memory_index(root: Path) -> tuple[IDX.Index | None, str]:
         docs = IDX.load_docs(root / "wiki", root)
         if not docs:
             return None, "memory-empty-corpus"
-        return IDX.build_memory(docs, revision=IDX.read_revision(root), glossary=IDX.load_glossary(root)), ""
+        return IDX.configure(IDX.build_memory(docs, revision=IDX.read_revision(root),
+                                              glossary=IDX.load_glossary(root)), root), ""
     except Exception as exc:  # noqa: BLE001 - 정본 손상 등 무엇이든 스캔으로
         return None, f"memory-error:{type(exc).__name__}"
 

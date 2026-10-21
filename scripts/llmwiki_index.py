@@ -83,6 +83,9 @@ PAGE_B = 0.25             # page 길이 정규화: 나머지 block 합에 1/(1 -
 TYPE_W = {"concept": 1.2, "entity": 1.2, "synthesis": 1.2}   # 통합된 지식 page 를 원본 요약보다 앞에
 HUB_TAGS = 200            # tag·keyword 가 이보다 많거나
 HUB_BLOCKS = 300          # block 이 이보다 많은 page 는 근거라기보다 목록(hub) 이다
+# 위의 두 기준은 위키 설정(context.json 의 hub_tags·hub_blocks)이나 환경변수로 바꾼다 — `configure()`.
+ENV_HUB_TAGS = "LLMWIKI_HUB_TAGS"
+ENV_HUB_BLOCKS = "LLMWIKI_HUB_BLOCKS"
 HUB_W = 0.5
 # ------------------------------------------------------------------ 그래프층
 SEEDS = 30
@@ -1354,6 +1357,7 @@ class Index:
         self.noev: frozenset[int] = frozenset(noev)
         self.last_signals: dict[str, float] = {}
         self._sender: dict[int, tuple[float, int]] = {}
+        self.hub_tags, self.hub_blocks = HUB_TAGS, HUB_BLOCKS
 
     def close(self) -> None:
         try:
@@ -1488,7 +1492,8 @@ class Index:
         1. 길이 정규화 — 최고 block 은 두고 나머지 block 합만 page 길이(본문 block 수)로 BM25 처럼 나눈다.
            block 이 많은 page 가 질문 토큰을 여기저기 조금씩 품어 1위를 가져가지 않게 한다.
         2. type 가중 — concept·entity·synthesis 는 소스를 통합한 page 라 원본 요약보다 앞에 둔다.
-        3. hub 감점 — tag·keyword 가 HUB_TAGS 를, block 이 HUB_BLOCKS 를 넘는 page 는 목록이지 근거가 아니다.
+        3. hub 감점 — tag·keyword 가 hub_tags 를, block 이 hub_blocks 를 넘는 page 는 목록이지 근거가 아니다
+           (기본 HUB_TAGS·HUB_BLOCKS, 위키마다 `configure()` 로 바꾼다).
         신호(raw_top 등) 는 `_lex` 의 원 점수 그대로다 — 무주입 문턱이 그 값으로 보정돼 있다.
         """
         cand = sorted(page_lex, key=lambda p: (-page_lex[p], p))[:CAND_PAGES]
@@ -1498,7 +1503,8 @@ class Index:
             kind, n_tags, n_blocks, n_body = facts.get(p, ("", 0, 0, 0))
             blocks = page_blocks[p]
             norm = 1.0 / (1.0 - PAGE_B + PAGE_B * n_body / self.avg_body) if n_body else 1.0
-            weight = TYPE_W.get(kind, 1.0) * (HUB_W if n_tags > HUB_TAGS or n_blocks > HUB_BLOCKS else 1.0)
+            weight = TYPE_W.get(kind, 1.0) * (HUB_W if n_tags > self.hub_tags or n_blocks > self.hub_blocks
+                                              else 1.0)
             out[p] = (blocks[0][0] + LEX_TAIL_W * norm * sum(sc for sc, _ in blocks[1:])) * weight
         return out
 
@@ -1704,6 +1710,29 @@ class Index:
             "ORDER BY CASE WHEN slug=? THEN 0 WHEN page_id=? THEN 1 ELSE 2 END LIMIT 1",
             (want, "page:" + want, want, want, want, "page:" + want)).fetchone()
         return dict(zip(cols, row)) if row else None
+
+
+def hub_limits(root: Path) -> tuple[int, int]:
+    """hub 감점 기준 (tag·keyword 수, block 수): 환경변수 → 위키 설정 context.json 의 hub_tags·hub_blocks → 기본."""
+    try:
+        value = json.loads(P.Layout(root).config("context.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        value = {}
+    out = []
+    for env, key, default in ((ENV_HUB_TAGS, "hub_tags", HUB_TAGS), (ENV_HUB_BLOCKS, "hub_blocks", HUB_BLOCKS)):
+        found: Any = os.environ.get(env, "").strip() or (value.get(key) if isinstance(value, dict) else None)
+        try:
+            number = int(found) if found not in (None, "") and not isinstance(found, bool) else default
+        except (TypeError, ValueError):
+            number = default
+        out.append(number if number > 0 else default)
+    return out[0], out[1]
+
+
+def configure(idx: Index, root: Path) -> Index:
+    """색인에 그 위키의 조회 설정(hub 기준)을 건다. 색인 바이트와는 무관하다 — 조회 때만 쓴다."""
+    idx.hub_tags, idx.hub_blocks = hub_limits(root)
+    return idx
 
 
 def open_ro(path: Path, *, busy_timeout_ms: int = 2000, glossary: Glossary | None = None) -> Index:

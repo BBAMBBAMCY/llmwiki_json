@@ -11,6 +11,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -696,6 +697,33 @@ class RerankTest(unittest.TestCase):
         self.assertEqual(self.ranked([gold, moved])[0][0], "page:gold")
         moved["keywords"] = moved["keywords"][:199]
         self.assertEqual(self.ranked([gold, moved])[0][0], "page:hub")
+
+    def test_hub_limits_come_from_the_wiki_config_or_the_environment(self) -> None:
+        gold = make_page("gold", "# Gold\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n")
+        tagged = make_page("hub", "# 태그 색인\n\n" + "\n\n".join(["배포 승인 절차 금요일 검토 회의 메모."] * 3) + "\n",
+                           tags=[f"t{i}" for i in range(10)])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tools" / "config").mkdir(parents=True)
+            self.assertEqual(IDX.hub_limits(root), (IDX.HUB_TAGS, IDX.HUB_BLOCKS))
+
+            def top() -> str:
+                idx = IDX.configure(IDX.build_memory([("wiki/x.json", p) for p in [gold, tagged, *self.FILLER]]), root)
+                try:
+                    return idx.search(self.QUERY).hits[0].page_id
+                finally:
+                    idx.close()
+            self.assertEqual(top(), "page:hub")                         # 기본 200 — tag 10 개는 hub 가 아니다
+            (root / "tools" / "config" / "context.json").write_text('{"hub_tags": 9, "hub_blocks": 50}',
+                                                                    encoding="utf-8")
+            self.assertEqual(IDX.hub_limits(root), (9, 50))
+            self.assertEqual(top(), "page:gold")                        # 위키가 기준을 9 로 낮췄다
+            with mock.patch.dict(os.environ, {IDX.ENV_HUB_TAGS: "20"}):
+                self.assertEqual(IDX.hub_limits(root), (20, 50))         # 환경변수가 앞선다
+                self.assertEqual(top(), "page:hub")
+            (root / "tools" / "config" / "context.json").write_text('{"hub_tags": "x", "hub_blocks": -1}',
+                                                                    encoding="utf-8")
+            self.assertEqual(IDX.hub_limits(root), (IDX.HUB_TAGS, IDX.HUB_BLOCKS))   # 못 읽는 값은 기본
 
     def test_a_conversational_tail_does_not_pull_a_page_that_shares_it(self) -> None:
         gold = make_page("gold", "# 컬럼 이름\n\n컬럼 이름은 시간 단위 규칙으로 짓는다.\n")
