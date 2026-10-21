@@ -212,7 +212,9 @@ class AdoptTest(SplitCase):
         (self.old / "INIT.md").write_text(current.replace(
             "- 새 소스가 주장을 뒤집어도 삭제하지 않고 history와 supersedes 관계를 남긴다.",
             "- 새 소스가 주장을 뒤집어도 삭제하지 않고 history와 supersedes 관계를 남긴다. (이 위키는 분기마다 정리한다)")
-            + "\n- 회의록 소스는 raw/meetings 에 둔다.\n", encoding="utf-8")
+            + "\n- 회의록 소스는 raw/meetings 에 둔다.\n- 회의록은 `python3 scripts/llmwiki.py lint` 로 보고 tag 는 "
+              "`tools/config/tags.json` 에서 고른다.\n", encoding="utf-8")
+        (self.old / ".dockerignore").write_text("node_modules\n", encoding="utf-8")
         # 이 저장소처럼 CLAUDE.md·AGENTS.md 는 INIT.md 를 가리키는 symlink 다
         (self.old / "CLAUDE.md").symlink_to("INIT.md")
         (self.old / "AGENTS.md").symlink_to("INIT.md")
@@ -261,6 +263,9 @@ class AdoptTest(SplitCase):
         local = self.adopt()["local"]
         text = local["text"]
         self.assertIn("- 회의록 소스는 raw/meetings 에 둔다.", text)               # 더한 줄 → 그대로
+        # 옮긴 로컬 규칙도 데이터 repo 의 명령·경로로 읽힌다
+        self.assertIn("`llmwiki lint` 로 보고 tag 는 `config/tags.json` 에서 고른다", text)
+        self.assertNotIn("python3 scripts/llmwiki.py", text)
         self.assertIn("검토 필요", text)                                            # 고친 줄 → 검토 필요
         self.assertIn("(이 위키는 분기마다 정리한다)", text)
         # upstream 이 나중에 고친 줄은 로컬 수정이 아니다 — 옛 판과 비교했기 때문이다
@@ -276,7 +281,7 @@ class AdoptTest(SplitCase):
         self.assertEqual(report["checks"]["validate"]["errors"], 0)
         self.assertIn("lint", report["checks"])
         for rel in ("scripts", "viewer", "tests", "tools/schema", "tools/parity", "docs", ".skills", "INIT.md",
-                    "index", "tools/config"):
+                    "index", "tools/config", ".dockerignore"):
             self.assertFalse((self.old / rel).exists(), rel)
         self.assertTrue((self.old / "tools" / "eval" / "my-questions.json").is_file())   # 목록 밖은 남긴다
         self.assertTrue((self.old / "config" / "groups.json").is_file())

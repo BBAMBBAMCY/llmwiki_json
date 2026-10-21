@@ -282,7 +282,7 @@ def init_data_repo(target: Path, *, code: Path | None = None, use_git: bool = Tr
 # --------------------------------------------------------------------------- adopt
 # 단일 repo(코드+데이터)를 데이터 repo 로 바꿀 때 지우는 코드. 데이터 repo 에는 코드를 두지 않는다.
 CODE_DIRS = ("scripts", "viewer", "tests", "tools/schema", "tools/parity", "docs", ".skills")
-CODE_FILES = ("INIT.md", "VERSION")
+CODE_FILES = ("INIT.md", "VERSION", ".dockerignore")
 # 단일 repo 시절에 커밋됐을 수 있는 파생물. 추적에서 빼고 지운다 — 분리 모드에서는 .llmwiki/ 에 다시 만든다.
 DERIVED_DIRS = ("index", "viewer/public/data")
 LOCAL_REVIEW = "검토 필요"
@@ -365,9 +365,19 @@ def local_lines(target_text: str, code: Path) -> dict[str, Any]:
     return {"base": commit, "added": added, "review": review}
 
 
+def data_words(line: str) -> str:
+    """단일 repo 의 명령·경로를 데이터 repo 의 것으로 (`python3 scripts/llmwiki.py` → `llmwiki`, `tools/config/` →
+    `config/` …). 생성 지침이 INIT.md 에 하는 것과 같은 바꿈이다 — LOCAL.md 로 옮긴 로컬 규칙도 데이터 repo 에서 읽힌다."""
+    for old, new in DATA_REWRITES:
+        line = line.replace(old, new)
+    return line
+
+
 def local_section(found: dict[str, Any], source: str) -> str:
     """local_lines 의 결과를 LOCAL.md 에 붙일 글로."""
     parts: list[str] = []
+    found = {**found, "added": [data_words(line) for line in found["added"]],
+             "review": [{**item, "local": [data_words(line) for line in item["local"]]} for item in found["review"]]}
     if found["added"]:
         parts += [f"## {source} 에서 옮긴 규칙", "", *[line for line in found["added"]], ""]
     for item in found["review"]:
