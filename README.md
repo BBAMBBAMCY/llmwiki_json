@@ -4,7 +4,7 @@ AI가 유지보수하는 JSON-canonical 개인 지식 위키입니다. JSON이 �
 
 Karpathy의 LLM Wiki 패턴을 따릅니다. 질문할 때마다 원본을 다시 조립하는 RAG 앱이 아니라, LLM이 지식을 한 번 통합해 두고 계속 갱신하는 누적형 위키입니다.
 
-> **옛 판을 쓰던 사람:** 설치한 폴더 그대로 AI 에이전트에게 맡겨 업그레이드할 수 있습니다. Claude Code나 Codex에 "https://github.com/BrilliantTiger/llmwiki_json/blob/main/docs/upgrade.md 를 읽고 내 llmwiki 를 업그레이드해 줘"라고 하면 됩니다. 절차는 [docs/upgrade.md](docs/upgrade.md)에 있습니다.
+> **설치·업데이트**는 아래 [설치](#설치)·[업데이트](#업데이트) 절에 있습니다. **옛 판을 쓰던 사람:** 설치한 폴더 그대로 AI 에이전트에게 맡겨 업그레이드할 수 있습니다. Claude Code나 Codex에 "https://github.com/BrilliantTiger/llmwiki_json/blob/main/docs/upgrade.md 를 읽고 내 llmwiki 를 업그레이드해 줘"라고 하면 됩니다. 절차는 [docs/upgrade.md](docs/upgrade.md)에 있습니다.
 
 이 저장소에 담긴 `wiki/` 내용은 구조를 보여주기 위한 **데모 데이터**입니다. `raw/demo/`의 원본을 그대로 ingest해 만든 것이라 지우고 자기 소스로 다시 시작하면 됩니다.
 
@@ -88,25 +88,59 @@ python3 scripts/llmwiki.py repair --dry-run                             # 이미
 
 저장소 밖의 초안은 경로를 남기지 않습니다(`raw_ref`가 비고 history에는 파일 이름만 남습니다) — 원본이 있으면 frontmatter `raw:`에 적습니다.
 
-## 설치 폴더와 갱신
+## 설치
 
-설치는 **폴더 하나**입니다. 설치한 폴더 안에 코드(`scripts/ viewer/ tools/ INIT.md VERSION …`)와 위키(`wiki/ raw/`)가 같이 있고, 갱신도 그 폴더 안에서 합니다. `~/opmd/llmwiki`에 설치했으면 `~/opmd/llmwiki`에서, `~/llmwiki_json`에 설치했으면 `~/llmwiki_json`에서 씁니다.
+설치는 **폴더 하나**입니다. 설치한 폴더 안에 코드(`scripts/ viewer/ tools/ INIT.md VERSION …`)와 위키(`wiki/ raw/`)가 같이 있고, 쓰는 것도 업데이트도 그 폴더 안에서 합니다. `~/opmd/llmwiki`에 설치했으면 `~/opmd/llmwiki`, `~/llmwiki_json`에 설치했으면 `~/llmwiki_json`이 그 폴더입니다.
 
-`scripts/install.sh`(Windows `install.ps1`)의 install은 **현재 폴더에 설치할지, 새 경로에 설치할지** 묻습니다. 새 경로를 적으면 이 폴더를 그 경로에 복사(git clone)하고 거기서 설치합니다. 묻지 않으려면 `--here`(현재 폴더) 또는 `--path DIR`(새 경로)을 줍니다. `--yes`나 비대화형이면 현재 폴더입니다.
-
-### 갱신
+macOS·Linux:
 
 ```bash
-llmwiki update            # = scripts/install.sh update = scripts\install.ps1 update
-llmwiki update --dry-run  # 아무것도 쓰지 않고 계획만
-llmwiki update --yes      # migrate 확인을 묻지 않는다
+git clone https://github.com/BrilliantTiger/llmwiki_json ~/llmwiki_json   # 경로는 원하는 대로
+cd ~/llmwiki_json
+./scripts/install.sh          # 묻는 것에 답한다 (아래)
+./scripts/install.sh verify   # 상태 점검
 ```
 
-위키 commit이 있어도 됩니다 — `git pull`로 합치지 않고 **코드 파일만** 골라 얹습니다. 순서는 폴더가 깨끗한지 검사 → 공개 저장소를 이 폴더의 git으로 받기(숨은 ref `refs/llmwiki/upstream` 하나) → 이 폴더 코드가 어느 판 위에 있는지 찾기(지난번 기록 `tools/upstream.json` → 같은 이력이면 merge-base → 파일을 복사해 만든 저장소면 가장 가까운 판) → 그 판과 새 판으로 코드 파일마다 3-way(손대지 않은 파일은 새 판으로, 직접 고친 파일은 남기고, 양쪽이 고친 파일은 합치고, 같은 자리를 양쪽이 고쳤으면 아무것도 쓰지 않고 멈춤) → 얹은 새 코드로 스키마 판이 다르면 `migrate` → build·validate·lint(validate error면 커밋하지 않고 멈춤) → 이 폴더에 커밋(`코드 v1.1.0→v1.2.0 (abc1234→def5678) 갱신, schema 1.1→1.2`) → 주기 루틴이 push하도록 설치돼 있을 때만 push입니다. `wiki/ raw/ index/ viewer/public/data/ tools/config/ bench/`는 이 폴더의 데이터라 손대지 않습니다. 바뀐 것이 없으면 "이미 최신"만 냅니다. 코드 판(`VERSION`, semver)은 스키마 판이 바뀔 때 minor 이상을 올립니다.
+Windows(PowerShell):
 
-옛 판을 쓰던 사람은 AI 에이전트에게 [docs/upgrade.md](docs/upgrade.md)를 읽혀 맡기면 됩니다 — 같은 폴더에서 끝납니다.
+```powershell
+git clone https://github.com/BrilliantTiger/llmwiki_json $HOME\llmwiki_json
+cd $HOME\llmwiki_json
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 verify
+```
 
-### 두 repo 운영 (선택)
+install은 차례로 묻습니다.
+
+1. **설치할 곳** — 현재 폴더면 Enter, 다른 곳에 두려면 그 경로. 새 경로를 적으면 이 폴더를 그 경로에 복사(git clone)하고 거기서 설치합니다.
+2. **주기 ingest 루틴** — `raw/`에 새 소스가 들어오면 에이전트가 위키에 넣게 걸지(claude·codex·none).
+3. **개인 저장소** — 위키를 밀어 올릴 private 저장소. 폴더의 git에 이미 개인 저장소 remote가 있으면 묻지 않고 그것을 씁니다.
+
+설치가 하는 일은 Claude Code·Codex의 hook(질문마다 근거 주입, 세션 시작·컴팩트 직후 고정 항목), MCP 서버, `llmwiki` 명령, 전역 지침 등록입니다. 여러 번 돌려도 결과가 같고, `./scripts/install.sh uninstall`이 넣은 것만 뺍니다.
+
+- 묻지 않고 설치: `./scripts/install.sh --here --yes --ingest-routine none` (새 경로면 `--here` 대신 `--path <경로>`)
+- 개인 저장소 붙이기: `--private-remote <URL>` 또는 `--gh-create <이름>`. **공개 저장소(`BrilliantTiger/llmwiki_json`)는 받기만 하는 곳입니다** — 위키를 그곳으로 push하지 않고, 설치기와 루틴도 그 주소로는 밀지 않습니다.
+- 설치 뒤: Codex를 쓰면 한 번 띄워 'Hooks need review'에서 신뢰(`t`)하고, 열려 있던 Claude Code·Codex 세션은 새로 엽니다. `~/.local/bin`(Windows `%LOCALAPPDATA%\llmwiki`)이 PATH에 없다는 안내가 나오면 그대로 더합니다.
+
+## 업데이트
+
+설치한 폴더에서:
+
+```bash
+llmwiki update --dry-run   # 무엇이 바뀌는지 먼저 본다 (아무것도 쓰지 않음)
+llmwiki update             # 새 코드를 이 폴더에 얹고 migrate·build·validate 뒤 커밋
+git push                   # 개인 저장소로 (주기 루틴의 push 를 켜 두었으면 update 가 민다)
+```
+
+`llmwiki update`는 `scripts/install.sh update`(Windows `scripts\install.ps1 update`)와 같습니다. `--yes`를 주면 스키마 변환 확인을 묻지 않습니다.
+
+- **기계가 둘 이상이면** 한 기계에서만 `llmwiki update` → `git push`하고, 다른 기계는 그 폴더에서 `git pull` 뒤 `llmwiki build`(검색 색인은 git에 없습니다). 두 기계가 각자 update하면 같은 갱신이 커밋 둘로 갈라집니다.
+- **충돌로 멈추면** 같은 파일의 같은 자리를 이 폴더와 공개 저장소가 둘 다 고친 것입니다. 아무것도 쓰지 않았으니, 그 파일을 출력 첫 줄의 `기준` commit으로 되돌려 커밋하고(`git checkout <기준> -- <파일>`) 다시 update한 뒤, 필요하면 내 수정을 다시 넣습니다.
+- **옛 판을 쓰던 사람**(이 폴더의 `scripts/llmwiki.py`에 제자리 업데이트가 없는 판)은 AI 에이전트에게 [docs/upgrade.md](docs/upgrade.md)를 읽혀 맡깁니다 — 같은 폴더에서 끝납니다.
+
+update는 `git pull`로 합치지 않고 **코드 파일만** 골라 얹습니다 — 위키 commit이 있어도 됩니다. 순서는 폴더가 깨끗한지 검사 → 공개 저장소를 이 폴더의 git으로 받기(숨은 ref `refs/llmwiki/upstream` 하나) → 이 폴더 코드가 어느 판 위에 있는지 찾기(지난번 기록 `tools/upstream.json` → 같은 이력이면 merge-base → 파일을 복사해 만든 저장소면 가장 가까운 판) → 그 판과 새 판으로 코드 파일마다 3-way(손대지 않은 파일은 새 판으로, 직접 고친 파일은 남기고, 양쪽이 고친 파일은 합치고 — 줄을 더하기만 했으면 새 판의 같은 자리에 붙이고 —, 같은 자리를 양쪽이 고쳤으면 멈춤) → 얹은 새 코드로 스키마 판이 다르면 `migrate` → build·validate·lint(validate error면 커밋하지 않고 멈춤) → 이 폴더에 커밋(`코드 v1.1.0→v1.2.0 (abc1234→def5678) 갱신, schema 1.1→1.2`) → 주기 루틴이 push하도록 설치돼 있을 때만 push입니다. `wiki/ raw/ index/ viewer/public/data/ tools/config/ bench/`는 이 폴더의 데이터라 손대지 않습니다. 바뀐 것이 없으면 "이미 최신"만 냅니다. 코드 판(`VERSION`, semver)은 스키마 판이 바뀔 때 minor 이상을 올립니다.
+
+## 두 repo 운영 (선택)
 
 원하면 코드와 데이터를 다른 저장소에 둘 수도 있습니다. **코드 repo**(이 저장소의 clone)는 upstream에서 받기만 하고, **데이터 repo**에는 자기 위키만 둡니다.
 
@@ -264,13 +298,12 @@ python3 scripts/llmwiki_routine.py run --dry-run  # 무엇을 할지만 본다
 
 ## 개인 저장소로 밀어 올리기 (선택)
 
-자기 위키는 개인 private 저장소로 밀어 올릴 수 있습니다. remote 하나만 더 붙이고 `origin`은 건드리지 않습니다. 데이터 repo를 따로 두었으면(위 "두 repo 운영") remote는 데이터 repo에 붙습니다.
+자기 위키는 개인 private 저장소로 밀어 올립니다. 공개 저장소(`BrilliantTiger/llmwiki_json`)는 받기만 하는 곳이라 그리로는 밀지 않습니다. 이미 개인 저장소 remote가 있으면(공개 저장소가 아닌 remote) 설치기는 그것을 쓰고 묻지 않습니다. 없으면 remote 하나(기본 이름 `private`)를 더 붙이고 `origin`은 건드리지 않습니다. 데이터 repo를 따로 두었으면(위 "두 repo 운영") remote는 데이터 repo에 붙습니다.
 
 ```bash
-./scripts/install.sh --data ~/my-wiki --private-remote git@github.com:me/my-wiki.git   # 이미 만든 저장소
-./scripts/install.sh --data ~/my-wiki --gh-create my-wiki                              # gh 로 새로 만든다
-llmwiki update                                                                         # 코드 갱신
-git -C ~/my-wiki push private HEAD:main                                                # 위키를 개인 저장소로
+./scripts/install.sh --here --private-remote git@github.com:me/my-wiki.git   # 이미 만든 저장소
+./scripts/install.sh --here --gh-create my-wiki                              # gh 로 새로 만든다
+git push private HEAD:main                                                   # 위키를 개인 저장소로
 ```
 
 이름이 같은 remote가 이미 있으면 덮어쓰지 않고 그대로 둡니다. 루틴을 걸어 두었다면 커밋과 push까지 루틴이 합니다.
