@@ -26,10 +26,12 @@ v1.1.0 부터는 **코드 repo**(이 저장소의 clone, 갱신만 받는다)와
 |---|---|---|
 | `C` 기본값 | `~/llmwiki-code` | `$HOME\llmwiki-code` |
 | `PY` | `python3` | `py -3` (없으면 `python`) |
+| `B` | `git -C W branch --show-current` (보통 `main`) | 같다 |
 | 설치기 | `C/scripts/install.sh` | `C\scripts\install.ps1` (`pwsh -File` 로) |
 | `LW` | `PY C/scripts/llmwiki.py --root W` | `py -3 C\scripts\llmwiki.py --root W` |
 
-`LW` 는 설치기가 놓는 `llmwiki` 명령과 같다. 새 shell 이 아니면 PATH 에 `llmwiki` 가 아직 없을 수 있으니 이
+`LW` 는 설치기가 놓는 `llmwiki` 명령과 같다. 설치기가 hook 에 쓰는 인터프리터는 따로 고르므로 `PY` 와 달라도
+된다(3.9 이상이면 된다). 새 shell 이 아니면 PATH 에 `llmwiki` 가 아직 없을 수 있으니 이
 절차에서는 `LW` 를 쓴다.
 
 ## 0. 지금 상태 확인
@@ -45,17 +47,23 @@ v1.1.0 부터는 **코드 repo**(이 저장소의 clone, 갱신만 받는다)와
    - `git -C W status --porcelain` — 비어 있지 않으면 **멈춤.** 무엇이 바뀌었는지 보여 주고 커밋할지 치울지
      사용자에게 묻는다. (주기 루틴이 돌던 중이면 끝나기를 기다린다.)
    - `git -C W remote -v` — 어느 remote 가 공개 코드 저장소이고 어느 것이 개인 저장소인지.
-   - `git -C W log --oneline -1`, `cat W/VERSION 2>/dev/null` (옛 clone 에는 없을 수 있다).
+   - `git -C W log --oneline -1`(이 commit 이 되돌릴 자리다), `cat W/VERSION 2>/dev/null` (옛 clone 에는 없을 수 있다).
+   - `git -C W status -sb` 가 공개 저장소 기준 "behind N" 을 보여도 **정상이다.** 공개 저장소를 pull 하지 않는다 —
+     이 절차가 코드를 새로 clone 하고, 4단계 adopt 가 branch 가 공개 저장소를 따르지 않게 바꾼다.
    - 주기 ingest 루틴이 걸려 있는지: `~/.llmwiki/installed-routine` (Windows `%USERPROFILE%\.llmwiki\installed-routine`)
      이 있으면 그 JSON 의 `agent`·`interval`·`push`·`remote` 를 적어 둔다. 없으면 루틴이 없다.
 4. **사용자가 코드를 직접 고쳤는지** 본다. 옛 저장소의 코드 파일은 adopt 가 지우고 새 코드로 대신한다. 사용자가
    고친 코드가 있으면 그 수정은 새 구조로 넘어가지 않는다.
    - `W` 가 공개 저장소 이력을 가지면(remote 중 하나가 `BrilliantTiger/llmwiki_json`):
      `git -C W fetch <그 remote>` 뒤 `git -C W log --oneline <그 remote>/main..HEAD -- scripts viewer tools tests .skills INIT.md`
-     에 사용자가 만든 commit 이 있는지 본다. (위키 ingest commit 은 `wiki/`·`raw/`·`index/` 만 건드린다.)
-   - 이력이 따로면(복사해 만든 private 저장소): 2단계 뒤 `LW adopt --dry-run` 이 보여 주는 "지운다 (코드)"
-     목록의 파일 중 `diff -q W/<파일> C/<파일>` 가 다른 것을 찾는다. 단 코드가 그동안 바뀌어서 다른 것이 대부분
-     이다 — 사용자가 고친 기억이 있는지 묻는 것으로 충분하다.
+     에 사용자가 만든 commit 이 있는지 보고, 있으면 `git -C W show --stat <commit>` 으로 무엇을 건드렸는지 본다.
+     **코드 수정이 아닌 것**(멈추지 않는다): `tools/config/*.json`(ingest 가 프로젝트·tag 를 등록한다 — adopt 가
+     `config/` 로 옮긴다), `INIT.md`·`CLAUDE.md`·`AGENTS.md`(사용자 규칙 — adopt 가 `LOCAL.md` 로 옮긴다).
+     **코드 수정**: 그 밖의 `scripts/`·`viewer/`·`tools/`·`tests/`·`.skills/` 파일.
+   - 이력이 따로면(복사해 만든 private 저장소): 이 자리에서는 판정하지 않는다. 4단계 `LW adopt W --dry-run` 의
+     "지운다 (코드)" 목록을 사용자에게 보이며 그중 직접 고친 파일이 있는지 묻는다(`diff -q W/<파일> C/<파일>` 은
+     코드가 그동안 바뀌어 대부분 다르니 판정 근거가 되지 못한다). 사용자가 "묻지 말라"고 했으면 고친 것이 없다고
+     보고 진행하고, 보고에 그렇게 적는다.
    - 사용자가 고친 코드가 있으면 **멈춤.** 목록을 보여 주고, 그 수정은 코드 repo 쪽에 제안(PR)하거나 버려야 한다고
      알린다. 진행하라고 하면 계속한다(1단계의 백업에 남는다).
 
@@ -89,7 +97,8 @@ C/scripts/install.sh --data W --yes --ingest-routine <루틴>
   `--routine-interval <interval>` 을 더한다. 루틴이 개인 저장소로 push 했으면(`push: true`) `--remote-name <remote>`
   를 더한다.
 - Windows: `pwsh -File C\scripts\install.ps1 -Data W -Yes -IngestRoutine <루틴>`.
-- 끝에 `== 확인` 목록이 나온다. `FAIL codex.trust` 는 사용자가 Codex 를 한 번 띄워 hook 을 신뢰해야 해서 나는 것이고
+- 끝에 `== 확인` 목록이 나온다. 한 클라이언트만 쓰면(`--claude`·`--codex` 로 좁혔거나 한쪽만 설치됐으면) 다른
+  쪽의 `codex.*`·`claude.*` FAIL 은 무시한다. `FAIL codex.trust` 는 사용자가 Codex 를 한 번 띄워 hook 을 신뢰해야 해서 나는 것이고
   (6단계에서 안내), 그 밖의 FAIL 은 **멈춤.**
 - `~/.local/bin` (Windows `%LOCALAPPDATA%\llmwiki`) 이 PATH 에 없다는 안내가 나오면 보고에 옮긴다. PATH 는 고치지 않는다.
 
@@ -116,10 +125,14 @@ LW adopt W --dry-run
 LW adopt W --apply
 ```
 
+- adopt 는 바꾼 뒤 build·validate·lint 를 돌려 결과를 보이고, **그 결과와 상관없이 커밋까지 한다.** 정본이 옛
+  판이면 `build: exit 2`, `validate: exit 1`, 명령 자체의 종료 코드도 0 이 아닐 수 있다 — 아래 확인을 하고 5단계로
+  간다.
 - 출력의 `wiki/ sha256 불변` 줄을 확인한다. 없거나 다르다고 하면 **멈춤.**
 - 정본이 옛 스키마 판이면 validate·lint 가 `schema_version must be …` error 를 page 수만큼 낸다. **정상이다** —
   다음 단계가 옮긴다. 그 밖의 error 가 있으면 적어 둔다(5단계 뒤 다시 본다).
-- adopt 는 바뀐 것을 한 커밋으로 남긴다.
+- adopt 는 바뀐 것을 한 커밋으로 남긴다. `커밋 …` 줄이 없으면 **멈춤.**
+- `remote … → llmwiki-code` 줄이 있으면 `git -C W remote -v` 와 `git -C W rev-parse --abbrev-ref @{u}` 로 결과를 본다.
 
 ## 5. 스키마를 옮기고 맞춘다
 
@@ -141,13 +154,15 @@ LW update --yes
 ## 6. push 와 마무리
 
 1. push 대상을 정한다: `git -C W remote -v` 에서 `llmwiki-code`(또는 `BrilliantTiger/llmwiki_json` 을 가리키는 것)를
-   **뺀** 사용자 저장소. 보통 `private` 또는 `origin` 이다.
+   **뺀** 사용자 저장소. 이름(`private`·`origin` 등)이 아니라 주소로 고른다. adopt 가 branch 를 그 remote 로
+   이어 두었으면 `git -C W rev-parse --abbrev-ref @{u}` 가 그것이다.
    - 그런 remote 가 없으면 push 하지 않는다. 사용자에게 개인 저장소를 붙이는 법을 알린다:
      `C/scripts/install.sh --data W --private-remote <URL>` 또는 `--gh-create <이름>`.
-2. `git -C W fetch <remote>` 뒤 `git -C W log --oneline HEAD..<remote>/main` 이 비어 있는지 본다. 다른 기계가 그동안
-   push 했으면 `git -C W pull --rebase <remote> main` 을 하고 `LW update --yes` 를 다시 돌린다.
-3. 승낙을 받고 `git -C W push <remote> main`.
-4. `C/scripts/install.sh verify` (Windows `install.ps1 verify`) 를 돌린다.
+2. `git -C W fetch <remote>` 뒤 `git -C W log --oneline HEAD..<remote>/B` 이 비어 있는지 본다. 다른 기계가 그동안
+   push 했으면 `git -C W pull --rebase <remote> B` 을 하고 `LW update --yes` 를 다시 돌린다.
+3. 승낙을 받고 `git -C W push <remote> B`.
+4. `C/scripts/install.sh verify` (Windows `install.ps1 verify`) 를 돌린다. 쓰지 않는 클라이언트의 FAIL 과
+   `codex.trust` 말고 FAIL 이 있으면 보고에 넣는다.
 5. 사용자에게 보고한다:
    - 한 일과 커밋(adopt·update·LOCAL.md), 백업 bundle 경로
    - 정본 판(전→후), validate error 수, `repair --dry-run` 결과
