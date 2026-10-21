@@ -10,6 +10,7 @@ Karpathy의 LLM Wiki 패턴을 따른다. raw source를 매 질문마다 다시 
 - 불변 원본: `raw/` (절대 수정하지 않는다)
 - 파생물: `index/*.json`, `index/search.sqlite`(검색 색인), `viewer/public/data/**`
 - 파생물은 `python3 scripts/llmwiki.py build`로만 갱신한다.
+- 정본 page의 `schema_version`은 코드가 정한다. 판이 다르면 `ingest`·`edit`·`repair`가 거부되니 `migrate --dry-run`으로 보고 `migrate --apply`로 옮긴다 (데이터 repo는 `llmwiki update`가 한다).
 - 정본 JSON은 손으로 쓰거나 고치지 않는다. 정본에 쓰는 명령은 `ingest`(page 생성·page 머리 갱신)와 `edit`(block)뿐이고, `repair`는 어긋난 block을 그 둘이 만드는 모양으로 되돌린다. 손으로 고친 JSON은 source_text·data·fingerprint·refs·links가 어긋나 검색·렌더·그래프가 서로 다른 말을 하고, `validate`가 error로 잡는다.
 
 ## 개발 규칙
