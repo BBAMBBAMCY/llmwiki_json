@@ -2741,6 +2741,39 @@ def migrate(ws: Workspace, *, apply: bool = False) -> dict[str, Any]:
     return report
 
 
+def print_adopt(report: dict[str, Any]) -> None:
+    def show(title: str, items: Iterable[str]) -> None:
+        items = list(items)
+        if items:
+            print(f"{title} ({len(items)})")
+            for item in items:
+                print(f"  {item}")
+    print(f"adopt {report['root']} ← 코드 {report['code']}" + ("  [dry-run]" if report["dry_run"] else ""))
+    show("지운다 (코드)", report["remove"])
+    show("옮긴다", (f"{a} → {b}" for a, b in report["move"]))
+    show("git 추적에서 뺀다 (파생물)", report["untrack"])
+    show("지운다 (파생물 디렉터리)", report["delete_derived"])
+    show("git 추적에서 뺀다 (skills 링크 — 기계마다 다시 만든다)", report["untrack_links"])
+    show("만든다", report["create"])
+    show("다시 만든다 (생성 지침)", report["rewrite"])
+    for item in report["local"]["sources"]:
+        print(f"LOCAL.md 로: {item['file']} (기준 upstream {item['base'][:12]}) — 옮김 {item['added']}줄, "
+              f"검토 필요 {item['review']}곳")
+    show("충돌 — apply 전에 정리한다", report["conflicts"])
+    show("손대지 않고 남는 것", report["leftover"])
+    if report.get("wiki_unchanged"):
+        print(f"wiki/ sha256 불변: {report['wiki_unchanged']['files']}개 파일 — raw/ {report['raw_unchanged']['files']}개 그대로")
+    for name, item in (report.get("checks") or {}).items():
+        extra = f" errors {item['errors']}, warnings {item['warnings']}" if "errors" in item else ""
+        print(f"{name}: exit {item['exit']}{extra}")
+        for line in item.get("first_errors") or []:
+            print(f"  {line}")
+    if report.get("commit"):
+        print(f"커밋 {report['commit'][:12]}")
+    if report["dry_run"]:
+        print("(dry-run — 아무것도 바꾸지 않았다. --apply 로 적용)")
+
+
 def print_migrate(report: dict[str, Any]) -> None:
     for item in report["changes"]:
         print(f"{item['page_id']}  ({item['file']})")
@@ -2835,6 +2868,13 @@ def build_parser() -> argparse.ArgumentParser:
     ini.add_argument("dir")
     ini.add_argument("--no-git", action="store_true", help="do not git init / commit")
 
+    ado = sub.add_parser("adopt", help="turn an existing single repo into a data repo (dry-run by default)")
+    ado.add_argument("dir")
+    ado.add_argument("--dry-run", action="store_true", help="(default) list what would be removed, moved, created")
+    ado.add_argument("--apply", action="store_true")
+    ado.add_argument("--no-commit", action="store_true", help="leave the result uncommitted")
+    ado.add_argument("--json", action="store_true", dest="as_json")
+
     gd = sub.add_parser("guides", help="data repo: regenerate CLAUDE.md/AGENTS.md (INIT.md + LOCAL.md) and the "
                                          "skills links (rewrites nothing that is already current)")
     gd.add_argument("--dry-run", action="store_true")
@@ -2928,6 +2968,20 @@ def run(argv: list[str] | None = None) -> int:
             emit(R.init_data_repo(Path(args.dir), use_git=not args.no_git))
         except (ValueError, RuntimeError) as exc:
             raise WikiError(str(exc)) from exc
+    elif command == "adopt":
+        if args.dry_run and args.apply:
+            raise WikiError("--dry-run 과 --apply 는 함께 줄 수 없다")
+        try:
+            report = R.adopt(Path(args.dir), apply=args.apply, commit=not args.no_commit,
+                             check=lambda root: R.run_checks(root))
+        except (ValueError, RuntimeError) as exc:
+            raise WikiError(str(exc)) from exc
+        if args.as_json:
+            emit(report)
+        else:
+            print_adopt(report)
+        checks = report.get("checks") or {}
+        return 1 if any(item.get("errors") for item in checks.values()) else 0
     elif command == "guides":
         if not ws.split:
             raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — 단일 repo 의 CLAUDE.md 는 손으로 둔다")
