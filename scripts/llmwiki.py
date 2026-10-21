@@ -51,12 +51,14 @@ try:  # package import (bench: `from scripts import llmwiki`)
     from . import llmwiki_index as search_index
     from . import llmwiki_paths as P
     from . import llmwiki_migrate as M
+    from . import llmwiki_repo as R
 except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_text as T  # type: ignore[no-redef]
     import llmwiki_index as search_index  # type: ignore[no-redef]
     import llmwiki_paths as P  # type: ignore[no-redef]
     import llmwiki_migrate as M  # type: ignore[no-redef]
+    import llmwiki_repo as R  # type: ignore[no-redef]
 
 DEFAULT_ROOT = P.CODE_ROOT
 ENV_ROOT = P.ENV_ROOT
@@ -2828,6 +2830,10 @@ def build_parser() -> argparse.ArgumentParser:
     mig.add_argument("--json", action="store_true", dest="as_json")
     mig.add_argument("--fixtures", action="store_true")
 
+    gd = sub.add_parser("guides", help="data repo: regenerate CLAUDE.md/AGENTS.md (INIT.md + LOCAL.md) and the "
+                                         "skills links (rewrites nothing that is already current)")
+    gd.add_argument("--dry-run", action="store_true")
+
     sub.add_parser("paths", help="print the resolved data root and its layout as JSON (viewer reads this)")
 
     log = sub.add_parser("log", help="append to or read wiki/log.jsonl")
@@ -2912,6 +2918,10 @@ def run(argv: list[str] | None = None) -> int:
             emit(report)
         else:
             print_migrate(report)
+    elif command == "guides":
+        if not ws.split:
+            raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — 단일 repo 의 CLAUDE.md 는 손으로 둔다")
+        emit(R.sync_guides(ws.root, dry_run=args.dry_run))
     elif command == "paths":
         emit({**ws.layout.describe(), "root_source": P.root_source(args.root)})
     elif command == "log":
