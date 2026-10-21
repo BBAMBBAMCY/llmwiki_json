@@ -68,10 +68,10 @@ RETRY_MAX_SECONDS = 24 * 3600
 # 고쳐서 넣게 한다 — 깨진 채로 두면 그 소스는 영영 위키에 못 들어간다.
 REPAIR_PROMPT = (
     "방금 ingest 한 결과가 {stage} 에서 깨졌다. 아래가 그 출력이다:\n\n{detail}\n\n"
-    "정본 wiki/**/*.json 을 직접 고치지 마라. 먼저 `python3 scripts/llmwiki.py repair` 로 "
-    "판정되는 block 어긋남을 고치고, 남은 것은 `python3 scripts/llmwiki.py edit` (block) 와 "
-    "`ingest --update` (page 머리) 로 고쳐 통과하게 만들어라. tools/schema/page.schema.json 이 "
-    "스키마 정본이다. raw/ 와 index/ · viewer/public/data 는 건드리지 마라 "
+    "정본 wiki/**/*.json 을 직접 고치지 마라. 먼저 `{cli} repair` 로 "
+    "판정되는 block 어긋남을 고치고, 남은 것은 `{cli} edit` (block) 와 "
+    "`ingest --update` (page 머리) 로 고쳐 통과하게 만들어라. {schema} 이 "
+    "스키마 정본이다. raw/ 와 파생물({derived}) 은 건드리지 마라 "
     "(파생물은 루틴이 다시 만든다). 고칠 수 없는 page 는 지우지 말고 무엇이 왜 "
     "안 되는지 마지막에 적어라."
 )
@@ -81,8 +81,8 @@ INGEST_PROMPT = (
     "raw/ 에 아직 위키에 들어가지 않은 소스가 있다. 저장소 규칙(CLAUDE.md / AGENTS.md)에 "
     "따라 ingest 해라: 원문을 읽고 page 를 만들거나 갱신하고, 관련 page 와 "
     "source/entity/concept/synthesis/project 관계를 이어라. 정본 wiki/**/*.json 은 직접 "
-    "쓰지 마라 — page 는 `python3 scripts/llmwiki.py ingest` 로 만들고 block 은 "
-    "`python3 scripts/llmwiki.py edit` 로 고친다 (둘 다 wiki/log.jsonl 에 남는다). "
+    "쓰지 마라 — page 는 `{cli} ingest` 로 만들고 block 은 "
+    "`{cli} edit` 로 고친다 (둘 다 wiki/log.jsonl 에 남는다). "
     "page 마다 raw_ref 에 원본의 저장소 상대경로(raw/…)를 반드시 적어라 (frontmatter `raw:`) — "
     "이 자리가 비면 루틴은 그 소스를 아직 넣지 않은 것으로 보고 계속 다시 부른다. "
     "build · validate 는 이 루틴이 네 뒤에 직접 돌린다. raw/ 는 수정하지 마라. "
@@ -90,13 +90,17 @@ INGEST_PROMPT = (
     "판단이 서지 않는 소스는 건너뛰고 무엇을 왜 건너뛰었는지 마지막에 적어라."
 )
 
-# ingest 로 바뀌어야 하는 것만 커밋한다. index/ 와 viewer 산출물은 build 가 만든다.
-# groups.json 은 모르는 프로젝트를 만났을 때 ingest 가 직접 등록하는 파일이라,
-# 빼 두면 커밋되지 않은 채 남아 다음 차례가 dirty tree 에서 멈춘다.
-COMMIT_PATHS = ("wiki", "index", "viewer/public/data", "tools/config/groups.json")
-# tag 허용 목록과 대역 사전도 같다 — 새 tag·새 용어가 나오면 에이전트가 거기에 더한다. 둘 다 선택이라
-# 있을 때만 넣는다(없는 경로를 git add 에 넘기면 add 전체가 실패한다).
-OPTIONAL_COMMIT_PATHS = ("tools/config/tags.json", "tools/config/glossary.json")
+# 루틴이 커밋하는 것은 데이터뿐이다: 정본(wiki/), 원본(raw/), 위키 설정, lock, LOCAL.md.
+# 파생물(index/·viewer/public/data, 분리 모드의 .llmwiki/)은 build 가 다시 만드는 것이라 커밋하지 않는다.
+# 설정은 모르는 프로젝트를 만나면 ingest 가 groups.json 에, 새 tag·용어가 나오면 에이전트가 tags.json·
+# glossary.json 에 더한다 — 빼 두면 커밋되지 않은 채 남아 다음 차례가 dirty tree 에서 멈춘다.
+# 분리 모드(`llmwiki.lock` 이 있는 데이터 repo)는 config/ 통째, 단일 repo 는 tools/config 의 위키 설정 파일들이다.
+COMMIT_PATHS = ("wiki", "raw", "config", "llmwiki.lock", "LOCAL.md")
+SINGLE_COMMIT_PATHS = ("wiki", "raw", "tools/config/groups.json", "tools/config/tags.json",
+                       "tools/config/glossary.json", "tools/config/context.json")
+# 그중 선택인 것은 있거나 이미 추적 중일 때만 넣는다(없는 경로를 git add 에 넘기면 add 전체가 실패한다).
+OPTIONAL_COMMIT_PATHS = ("raw", "config", "LOCAL.md", "tools/config/tags.json", "tools/config/glossary.json",
+                         "tools/config/context.json")
 
 # raw/ 에 있어도 소스가 아닌 것들. `raw/.llmwikiignore` 로 더 넣을 수 있다.
 DEFAULT_IGNORE = ("README*", "readme*", "*.gitkeep", "*.lock", "*.tmp", "*.part",
@@ -282,8 +286,15 @@ def current_branch(root: Path) -> str:
 
 
 def is_git_repo(root: Path) -> bool:
-    code, out = git(root, "rev-parse", "--is-inside-work-tree", timeout=15.0)
-    return code == 0 and out.strip() == "true"
+    """root 가 **그 자신의** git 저장소인가. 다른 저장소(예: 코드 repo) 안에 놓인 디렉터리면 아니다 —
+    루틴은 데이터 repo 에서만 pull·commit·push 한다."""
+    code, out = git(root, "rev-parse", "--show-toplevel", timeout=15.0)
+    if code != 0 or not out.strip():
+        return False
+    try:
+        return Path(out.strip().splitlines()[-1]).resolve() == Path(root).resolve()
+    except OSError:
+        return False
 
 
 def remote_branch_state(root: Path, remote: str, branch: str) -> str:
@@ -348,10 +359,11 @@ def push_pending(root: Path, remote: str, branch: str) -> tuple[bool, str]:
 
 
 def commit_paths(root: Path) -> tuple[str, ...]:
-    """루틴이 커밋하는 경로 — 선택 설정은 있거나 이미 추적 중일 때만."""
-    optional = tuple(rel for rel in OPTIONAL_COMMIT_PATHS
-                     if (root / rel).exists() or git(root, "ls-files", "--", rel)[1].strip())
-    return COMMIT_PATHS + optional
+    """루틴이 커밋하는 경로 — 선택인 것은 있거나 이미 추적 중일 때만."""
+    wanted = COMMIT_PATHS if P.is_data_repo(root) else SINGLE_COMMIT_PATHS
+    return tuple(rel for rel in wanted
+                 if rel not in OPTIONAL_COMMIT_PATHS
+                 or (root / rel).exists() or git(root, "ls-files", "--", rel)[1].strip())
 
 
 def changed_paths(root: Path) -> list[str]:
@@ -389,7 +401,7 @@ def commit_and_push(root: Path, remote: str, branch: str,
 def rebuild(root: Path) -> tuple[str, str]:
     """파생물을 다시 만들고 검증한다. ('', 설명) 이면 통과."""
     for stage in ("build", "validate"):
-        code, out = run([sys.executable, str(root / "scripts" / "llmwiki.py"), stage],
+        code, out = run([sys.executable, str(WIKI_CLI), "--root", str(root), stage],
                         cwd=root, timeout=600.0)
         if code != 0:
             return stage, f"{stage} 실패: {out[-200:]}"
@@ -408,7 +420,7 @@ def rebuild_or_repair(root: Path, agent: str, timeout: float,
             continue
         if note:
             note("repair", f"{stage} 가 깨졌다 — {name} 에게 고치라고 되돌린다")
-        code, out = run(agent_argv(name, REPAIR_PROMPT.format(stage=stage, detail=detail)),
+        code, out = run(agent_argv(name, prompt_for(root, REPAIR_PROMPT, stage=stage, detail=detail), root),
                         cwd=root, timeout=timeout)
         stage, detail = rebuild(root)
         if not stage:
@@ -432,7 +444,7 @@ def run_agent(root: Path, agent: str, prompt: str, timeout: float,
             if note and name == agent:
                 note("agent", f"{name} 실행 파일이 없다 — 다른 에이전트를 찾는다")
             continue
-        code, out = run(agent_argv(name, prompt), cwd=root, timeout=timeout)
+        code, out = run(agent_argv(name, prompt, root), cwd=root, timeout=timeout)
         used = name
         if code == 0:
             return code, out, used
@@ -469,15 +481,36 @@ def finish_leftover(root: Path, remote: str, branch: str, *, agent: str = "claud
 
 
 # --------------------------------------------------------------------------- 에이전트
-def wiki_cli_tools() -> list[str]:
+WIKI_CLI = Path(__file__).resolve().parent / "llmwiki.py"
+
+
+def wiki_cli(root: Path | None = None) -> str:
+    """에이전트에게 알려 줄 위키 CLI. 단일 repo 는 그 저장소 안의 상대경로, 분리 모드는 데이터 repo 에
+    scripts/ 가 없으니 코드 repo 의 절대경로다 (데이터 root 는 cwd 의 llmwiki.lock 으로 찾는다)."""
+    if root is not None and P.is_data_repo(root):
+        return f"{shlex.quote(sys.executable)} {shlex.quote(str(WIKI_CLI))}"
+    return "python3 scripts/llmwiki.py"
+
+
+def prompt_for(root: Path, template: str, **extra: str) -> str:
+    layout = P.Layout(root)
+    derived = ".llmwiki/" if layout.split else "index/ · viewer/public/data"
+    schema = str(layout.schema) if layout.split else "tools/schema/page.schema.json"
+    return template.format(cli=wiki_cli(root), schema=schema, derived=derived, **extra)
+
+
+def wiki_cli_tools(root: Path | None = None) -> list[str]:
     """무인 claude 에게 여는 셸은 위키 CLI 하나다 — 정본은 ingest·edit·repair 로만 쓴다."""
-    return [f"Bash({python} scripts/llmwiki.py *)" for python in dict.fromkeys(("python3", sys.executable))]
+    pythons = dict.fromkeys(("python3", sys.executable))
+    if root is not None and P.is_data_repo(root):
+        return [f"Bash({python} {WIKI_CLI} *)" for python in pythons]
+    return [f"Bash({python} scripts/llmwiki.py *)" for python in pythons]
 
 
-def agent_argv(agent: str, prompt: str) -> list[str]:
+def agent_argv(agent: str, prompt: str, root: Path | None = None) -> list[str]:
     if agent == "claude":
         return ["claude", "-p", prompt, "--permission-mode", "acceptEdits",
-                "--allowedTools", *wiki_cli_tools()]
+                "--allowedTools", *wiki_cli_tools(root)]
     if agent == "codex":
         # 사용자 config 의 기본 sandbox 가 read-only 면 무인 ingest 는 한 줄도
         # 쓰지 못한 채 매번 조용히 끝난다. 쓸 수 있는 범위를 명시한다.
@@ -605,7 +638,7 @@ def do_run(root: Path, *, agent: str, remote: str, push: bool, dry_run: bool,
         else:
             step("pending", f"미처리 raw 소스 {len(pending)}건: " + ", ".join(pending[:5])
                  + (" …" if len(pending) > 5 else "") + (f" — {why}" if why else ""))
-            tasks.append(("ingest", INGEST_PROMPT))
+            tasks.append(("ingest", prompt_for(root, INGEST_PROMPT)))
 
         if not tasks:
             report["skipped"] = "nothing-to-do"

@@ -209,7 +209,7 @@ python3 scripts/llmwiki_routine.py status         # 등록 상태와 마지막 �
 python3 scripts/llmwiki_routine.py run --dry-run  # 무엇을 할지만 본다
 ```
 
-한 번 돌 때의 순서는 **이월분 정리 → git pull → 미처리 확인 → ingest → build·validate → 커밋 → push**입니다. 무인 에이전트도 정본을 `ingest`·`edit`·`repair`로만 씁니다 — claude에게는 위키 CLI(`python3 scripts/llmwiki.py …`)만 셸로 열어 둡니다. 미처리 소스가 없으면 에이전트를 아예 부르지 않습니다. **안 들어간 소스를 접는 자리는 없습니다** — 실패였든 에이전트가 건너뛴 판단이었든 남아 있는 한 최대 하루 간격으로 계속 다시 넣고, 고른 에이전트가 실패하면 다른 에이전트로 한 번 더 하며, build·validate가 깨지면 그 출력을 에이전트에게 되돌려 고치게 합니다. 지난 차례가 커밋하지 못하고 남긴 변경은 다음 차례가 이어서 마무리합니다. `raw/.llmwikiignore`로 소스가 아닌 파일을 제외할 수 있습니다. 워킹트리가 더럽거나 히스토리가 갈라졌으면 pull 단계에서 멈추고 아무것도 커밋하지 않습니다.
+한 번 돌 때의 순서는 **이월분 정리 → git pull → 미처리 확인 → ingest → build·validate → 커밋 → push**입니다. 무인 에이전트도 정본을 `ingest`·`edit`·`repair`로만 씁니다 — claude에게는 위키 CLI(`python3 scripts/llmwiki.py …`)만 셸로 열어 둡니다. 미처리 소스가 없으면 에이전트를 아예 부르지 않습니다. **안 들어간 소스를 접는 자리는 없습니다** — 실패였든 에이전트가 건너뛴 판단이었든 남아 있는 한 최대 하루 간격으로 계속 다시 넣고, 고른 에이전트가 실패하면 다른 에이전트로 한 번 더 하며, build·validate가 깨지면 그 출력을 에이전트에게 되돌려 고치게 합니다. 지난 차례가 커밋하지 못하고 남긴 변경은 다음 차례가 이어서 마무리합니다. `raw/.llmwikiignore`로 소스가 아닌 파일을 제외할 수 있습니다. 워킹트리가 더럽거나 히스토리가 갈라졌으면 pull 단계에서 멈추고 아무것도 커밋하지 않습니다. 루틴이 커밋하는 것은 데이터뿐입니다 — `wiki/`·`raw/`·위키 설정(단일 repo는 `tools/config/`의 groups·tags·glossary·context, 데이터 repo는 `config/`)·`llmwiki.lock`·`LOCAL.md`. 파생물(`index/`·`viewer/public/data/`·`.llmwiki/`)은 커밋하지 않고, git 작업(pull·commit·push)은 데이터 root가 그 자신의 git 저장소일 때만 그 저장소에서 합니다 — 코드 repo는 건드리지 않습니다.
 
 주기는 **에이전트 자신의 주기 작업**으로만 겁니다(claude면 `~/.claude/scheduled-tasks/llmwiki-ingest/`). OS 스케줄러는 쓰지 않고, 직접 써 둔 같은 이름의 작업은 덮어쓰지 않습니다. `status`는 등록 여부가 아니라 마지막 실행 시각으로 판정해, 오래 쉬었으면 `firing: false`와 종료 코드 1로 알립니다.
 

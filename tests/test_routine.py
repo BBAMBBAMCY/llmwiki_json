@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 import unittest
 from pathlib import Path
 
-from tests.support import REPO, WorkspaceCase, make_page
+from tests.support import REPO, SplitCase, WorkspaceCase, git, git_init, make_page
 
 ROUTINE_SCRIPT = REPO / "scripts" / "llmwiki_routine.py"
 
@@ -689,15 +690,12 @@ class SafetyTest(RoutineCase):
         self.cli("run", "--nope", expect=2)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class WritePolicyTest(unittest.TestCase):
     """정본은 ingest·edit 로만 쓴다 — 루틴이 에이전트에게 주는 지시와 권한도 그 규칙을 따른다."""
 
     def test_the_prompts_send_the_agent_to_the_cli_not_the_json(self) -> None:
-        for prompt in (routine.INGEST_PROMPT, routine.REPAIR_PROMPT):
+        for template in (routine.INGEST_PROMPT, routine.REPAIR_PROMPT):
+            prompt = routine.prompt_for(REPO, template, stage="build", detail="x")
             self.assertIn("직접", prompt)
             self.assertIn("scripts/llmwiki.py", prompt)
             self.assertNotIn("파일을 쓰는 것으로 끝내라", prompt)
@@ -725,3 +723,76 @@ class WritePolicyTest(unittest.TestCase):
             text = (REPO / rel).read_text(encoding="utf-8")
             self.assertRegex(text, r"wiki/\*\*/\*\.json`?을 직접 쓰", rel)
             self.assertIn("ingest", text, rel)
+
+
+class DerivedNotCommittedTest(RoutineCase):
+    def test_single_repo_commits_never_include_derived_artifacts(self) -> None:
+        """README 가 "커밋하지 않는다" 고 적은 파생물을 루틴이 커밋하던 버그."""
+        self.init_repo()
+        (self.root_path / "wiki" / "concepts" / "new.json").write_text("[]", encoding="utf-8")
+        (self.root_path / "index" / "catalog.json").write_text("{}", encoding="utf-8")
+        (self.root_path / "viewer" / "public" / "data" / "graph.json").write_text("{}", encoding="utf-8")
+        self.assertNotIn("index", routine.commit_paths(self.root_path))
+        self.assertNotIn("viewer/public/data", routine.commit_paths(self.root_path))
+        ok, detail = routine.commit_and_push(self.root_path, "private", "main", push=False)
+        self.assertTrue(ok, detail)
+        _, out = self.git("show", "--name-only", "--format=", "HEAD")
+        self.assertIn("wiki/concepts/new.json", out)
+        self.assertNotIn("index/", out)
+        self.assertNotIn("viewer/", out)
+
+
+class SplitRoutineTest(SplitCase):
+    """분리 모드의 루틴은 데이터 repo 만 pull·commit·push 하고 코드 repo 는 건드리지 않는다."""
+
+    git_code = True
+
+    def setUp(self) -> None:
+        super().setUp()
+        os.environ[routine.ENV_STATE_DIR] = str(self.tmp / "state")
+        (self.data / ".gitignore").write_text(".llmwiki/\n", encoding="utf-8")
+        (self.data / "LOCAL.md").write_text("# 이 위키만의 규칙\n", encoding="utf-8")
+        self.data_commit = git_init(self.data)
+
+    def test_only_data_paths_are_committed(self) -> None:
+        self.assertEqual(routine.commit_paths(self.data), ("wiki", "raw", "config", "llmwiki.lock", "LOCAL.md"))
+        self.write_data_page(make_page("a", "# A\n\n본문.\n", projects=["alpha"]))
+        stage, detail = routine.rebuild(self.data)               # 코드 repo 의 CLI 로 데이터 root 를 굽는다
+        self.assertEqual(stage, "", detail)
+        self.assertTrue((self.data / ".llmwiki" / "index" / "search.sqlite").is_file())
+        (self.data / "config" / "groups.json").write_text("{}", encoding="utf-8")
+        ok, detail = routine.commit_and_push(self.data, "private", "main", push=False)
+        self.assertTrue(ok, detail)
+        names = git(self.data, "show", "--name-only", "--format=", "HEAD").splitlines()
+        self.assertEqual(sorted(names), ["config/groups.json", "wiki/concepts/a.json"])
+        self.assertEqual(git(self.data, "status", "--porcelain"), "")
+        # 코드 repo 는 그대로다
+        self.assertEqual(git(self.code, "rev-parse", "HEAD"), self.code_commit)
+        self.assertEqual(git(self.code, "status", "--porcelain"), "")
+
+    def test_a_data_dir_inside_another_repo_is_not_treated_as_a_git_repo(self) -> None:
+        """git 이 위로 올라가 코드 repo 를 찾아도, 그건 데이터 repo 가 아니다."""
+        inner = self.code / "nested-data"
+        shutil.copytree(self.data, inner, ignore=shutil.ignore_patterns(".git"))
+        self.assertFalse(routine.is_git_repo(inner))
+        (inner / "wiki" / "concepts" / "b.json").write_text("[]", encoding="utf-8")
+        ok, detail = routine.commit_and_push(inner, "private", "main", push=False)
+        self.assertTrue(ok)
+        self.assertIn("git 저장소가 아니다", detail)
+        ok, detail = routine.pull_first(inner, "private", "main")
+        self.assertIn("git 저장소가 아니다", detail)
+        self.assertEqual(git(self.code, "rev-parse", "HEAD"), self.code_commit)
+
+    def test_agents_get_the_code_repo_cli_in_split_mode(self) -> None:
+        prompt = routine.prompt_for(self.data, routine.INGEST_PROMPT)
+        self.assertIn(str(Path(routine.__file__).resolve().parent / "llmwiki.py"), prompt)
+        self.assertNotIn("python3 scripts/llmwiki.py", prompt)
+        repair = routine.prompt_for(self.data, routine.REPAIR_PROMPT, stage="build", detail="x")
+        self.assertIn(".llmwiki/", repair)
+        argv = routine.agent_argv("claude", "지시", self.data)
+        tools = argv[argv.index("--allowedTools") + 1:]
+        self.assertTrue(all(tool.endswith("/scripts/llmwiki.py *)") for tool in tools), tools)
+
+
+if __name__ == "__main__":
+    unittest.main()
