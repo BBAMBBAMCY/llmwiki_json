@@ -204,6 +204,9 @@ class AdoptTest(SplitCase):
         # 코드 repo 이력: 옛 INIT.md → 지금 INIT.md. 옛 clone 은 옛 판 위에 로컬 규칙을 더했다.
         current = (self.code / "INIT.md").read_text(encoding="utf-8")
         self.assertIn(UPSTREAM_OLD_LINE, current)
+        for rel in ("viewer/package.json", "docs/install.md", "tests/support.py"):   # 코드 repo 의 나머지 자리
+            (self.code / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.code / rel).write_text("{}\n", encoding="utf-8")
         git_init(self.code, "옛 판")
         (self.code / "INIT.md").write_text(current.replace(UPSTREAM_OLD_LINE, UPSTREAM_NEW_LINE), encoding="utf-8")
         git(self.code, "commit", "-qam", "upstream 이 INIT.md 를 고친다")
@@ -215,13 +218,19 @@ class AdoptTest(SplitCase):
             + "\n- 회의록 소스는 raw/meetings 에 둔다.\n- 회의록은 `python3 scripts/llmwiki.py lint` 로 보고 tag 는 "
               "`tools/config/tags.json` 에서 고른다.\n", encoding="utf-8")
         (self.old / ".dockerignore").write_text("node_modules\n", encoding="utf-8")
+        # upstream 에 없는 이 저장소만의 코드 — adopt 가 지우면 안 된다
+        (self.old / "scripts" / "my_tool.py").write_text("print('mine')\n", encoding="utf-8")
+        (self.old / "viewer" / "src" / "lib").mkdir(parents=True)
+        (self.old / "viewer" / "src" / "lib" / "mine.ts").write_text("export const mine = 1;\n", encoding="utf-8")
+        (self.old / "viewer" / "node_modules" / "pkg").mkdir(parents=True)
+        (self.old / "viewer" / "node_modules" / "pkg" / "index.js").write_text("x\n", encoding="utf-8")
         # 이 저장소처럼 CLAUDE.md·AGENTS.md 는 INIT.md 를 가리키는 symlink 다
         (self.old / "CLAUDE.md").symlink_to("INIT.md")
         (self.old / "AGENTS.md").symlink_to("INIT.md")
         shutil.copytree(REPO / "wiki", self.old / "wiki")
         (self.old / "raw").mkdir()
         (self.old / "raw" / "source.md").write_text("# 원본\n", encoding="utf-8")
-        for rel in ("viewer/package.json", "docs/guide.md", "tests/test_x.py"):
+        for rel in ("viewer/package.json", "docs/install.md", "tests/support.py"):
             (self.old / rel).parent.mkdir(parents=True, exist_ok=True)
             (self.old / rel).write_text("{}\n", encoding="utf-8")
         (self.old / "tools" / "eval").mkdir(parents=True)
@@ -243,9 +252,11 @@ class AdoptTest(SplitCase):
     def test_dry_run_lists_everything_and_changes_nothing(self) -> None:
         plan = self.adopt()
         self.assertTrue(plan["dry_run"])
-        for rel in ("scripts", "viewer", "tests", "tools/schema", "tools/parity", "docs", ".skills", "INIT.md",
-                    "VERSION"):
+        for rel in ("tests", "tools/schema", "tools/parity", "docs", ".skills", "INIT.md", "VERSION",
+                    "scripts/llmwiki.py", "viewer/package.json"):
             self.assertIn(rel, plan["remove"])
+        self.assertEqual(plan["keep"], ["scripts/my_tool.py", "viewer/src/lib/mine.ts"])
+        self.assertNotIn("scripts/my_tool.py", plan["remove"])
         self.assertIn(["tools/config/groups.json", "config/groups.json"], plan["move"])
         self.assertIn("index/catalog.json", plan["untrack"])
         self.assertIn("viewer/public/data/graph.json", plan["untrack"])
@@ -280,9 +291,14 @@ class AdoptTest(SplitCase):
         self.assertEqual(report["checks"]["build"]["exit"], 0)
         self.assertEqual(report["checks"]["validate"]["errors"], 0)
         self.assertIn("lint", report["checks"])
-        for rel in ("scripts", "viewer", "tests", "tools/schema", "tools/parity", "docs", ".skills", "INIT.md",
-                    "index", "tools/config", ".dockerignore"):
+        for rel in ("tests", "tools/schema", "tools/parity", "docs", ".skills", "INIT.md", "index", "tools/config",
+                    ".dockerignore", "scripts/llmwiki.py", "scripts/install.sh", "viewer/package.json",
+                    "viewer/node_modules", "viewer/public"):
             self.assertFalse((self.old / rel).exists(), rel)
+        # 이 저장소만의 코드는 그대로 남았다
+        self.assertEqual((self.old / "scripts" / "my_tool.py").read_text(encoding="utf-8"), "print('mine')\n")
+        self.assertTrue((self.old / "viewer" / "src" / "lib" / "mine.ts").is_file())
+        self.assertEqual(sorted(p.name for p in (self.old / "scripts").iterdir()), ["my_tool.py"])
         self.assertTrue((self.old / "tools" / "eval" / "my-questions.json").is_file())   # 목록 밖은 남긴다
         self.assertTrue((self.old / "config" / "groups.json").is_file())
         self.assertEqual({p.relative_to(self.old).as_posix(): p.read_bytes()
@@ -303,7 +319,9 @@ class AdoptTest(SplitCase):
         # 커밋됐고 트리가 깨끗하다; 파생물은 추적에서 빠지고 .llmwiki/ 에 다시 생겼다
         self.assertEqual(git(self.old, "status", "--porcelain"), "")
         files = git(self.old, "ls-files").splitlines()
-        self.assertFalse([f for f in files if f.startswith(("index/", "viewer/", "scripts/", ".claude/"))])
+        self.assertFalse([f for f in files if f.startswith(("index/", ".claude/", "viewer/public/"))])
+        self.assertEqual([f for f in files if f.startswith(("scripts/", "viewer/"))],
+                         ["scripts/my_tool.py", "viewer/src/lib/mine.ts"])
         self.assertIn("config/groups.json", files)
         self.assertIn("llmwiki.lock", files)
         self.assertTrue((self.old / ".llmwiki" / "index" / "search.sqlite").is_file())

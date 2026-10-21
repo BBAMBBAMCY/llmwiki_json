@@ -392,6 +392,56 @@ def local_section(found: dict[str, Any], source: str) -> str:
     return "\n".join(parts).rstrip("\n")
 
 
+# 코드 디렉터리 안에서 코드 repo 와 견주지 않고 지워도 되는 것 — 받아 온 패키지·빌드 산출물·캐시·파생물.
+JUNK_PARTS = ("node_modules", "dist", "__pycache__", ".pytest_cache")
+
+
+def code_removals(target: Path, code: Path) -> tuple[list[str], list[str]]:
+    """지울 코드 경로와 남길 파일.
+
+    코드 디렉터리라도 코드 repo 에 같은 경로가 없는 파일은 이 저장소만의 것(개인 스크립트·viewer 손질)이라
+    지우지 않는다 — 지울 것은 코드 repo 에 있는 파일, 받아 온 패키지·캐시, 파생물뿐이다. 안이 모두 지울
+    것인 디렉터리는 한 줄로 적는다(node_modules 를 파일마다 늘어놓지 않는다)."""
+    derived = {target / rel for rel in DERIVED_DIRS}
+    remove: list[str] = []
+    keep: list[str] = []
+
+    def removable(path: Path) -> bool:
+        rel = path.relative_to(target)
+        if path.name in JUNK_PARTS or path in derived:
+            return True
+        return (code / rel).exists() or (code / rel).is_symlink()
+
+    def walk(folder: Path) -> bool:
+        """folder 안이 모두 지울 것이면 True (그때는 부르는 쪽이 folder 를 한 줄로 적는다)."""
+        verdicts: list[tuple[Path, bool]] = []
+        for child in sorted(folder.iterdir()):
+            if child.is_dir() and not child.is_symlink() and not (child.name in JUNK_PARTS or child in derived):
+                verdicts.append((child, walk(child)))
+            else:
+                verdicts.append((child, removable(child)))
+        if all(ok for _child, ok in verdicts):
+            return True
+        for child, ok in verdicts:
+            rel = child.relative_to(target).as_posix()
+            if ok:
+                remove.append(rel)
+            elif child.is_file() or child.is_symlink():
+                keep.append(rel)
+        return False
+
+    for rel in CODE_FILES:
+        if (target / rel).is_file() or (target / rel).is_symlink():
+            remove.append(rel)
+    for rel in CODE_DIRS:
+        base = target / rel
+        if base.is_symlink() or base.is_file():
+            remove.append(rel)
+        elif base.is_dir() and walk(base):
+            remove.append(rel)
+    return remove, sorted(keep)
+
+
 def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
     """adopt 가 할 일을 계산만 한다."""
     target = Path(target).expanduser().resolve()
@@ -407,7 +457,7 @@ def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
         status, out = git(target, "status", "--porcelain")
         if status != 0 or out.strip():
             raise ValueError(f"{target} 에 커밋되지 않은 변경이 있다 — 먼저 커밋하거나 치운다:\n{out[:800]}")
-    remove = [rel for rel in (*CODE_DIRS, *CODE_FILES) if (target / rel).exists() or (target / rel).is_symlink()]
+    remove, keep = code_removals(target, code)
     moves: list[tuple[str, str]] = []
     conflicts: list[str] = []
     config_src = target / "tools" / "config"
@@ -446,7 +496,7 @@ def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
                       if p.name not in {".git", ".gitignore", "wiki", "raw", "config", "tools", "LOCAL.md",
                                         P.LOCK_NAME, *GUIDE_FILES, *(r.split("/")[0] for r in remove),
                                         "index", ".claude", ".codex", P.DERIVED_DIR})
-    return {"root": str(target), "code": str(code), "git": is_git, "remove": remove, "move": moves,
+    return {"root": str(target), "code": str(code), "git": is_git, "remove": remove, "keep": keep, "move": moves,
             "untrack": untrack, "delete_derived": derived, "untrack_links": links, "create": create,
             "rewrite": [rel for rel in GUIDE_FILES if (target / rel).exists()], "local": local,
             "conflicts": conflicts, "leftover": leftover}
@@ -544,6 +594,14 @@ def adopt(target: Path, *, code: Path | None = None, apply: bool = False, commit
         remove_path(target, rel, is_git)
     for rel in plan["delete_derived"]:
         remove_path(target, rel, is_git)
+    for rel in CODE_DIRS:                      # 남긴 파일 사이에 빈 디렉터리가 남지 않게
+        base = target / rel
+        if base.is_dir() and not base.is_symlink():
+            for folder in sorted((p for p in base.rglob("*") if p.is_dir()), key=lambda p: -len(p.parts)):
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+            if not any(base.iterdir()):
+                base.rmdir()
     tools = target / "tools"
     for sub in (tools / "config", tools):
         if sub.is_dir() and not any(sub.iterdir()):

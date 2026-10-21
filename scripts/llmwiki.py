@@ -2812,6 +2812,7 @@ def print_adopt(report: dict[str, Any]) -> None:
                 print(f"  {item}")
     print(f"adopt {report['root']} ← 코드 {report['code']}" + ("  [dry-run]" if report["dry_run"] else ""))
     show("지운다 (코드)", report["remove"])
+    show("남긴다 — 코드 디렉터리 안이지만 코드 repo 에 없는 이 저장소만의 파일 (옮길 곳은 직접 정한다)", report.get("keep") or [])
     show("옮긴다", (f"{a} → {b}" for a, b in report["move"]))
     show("git 추적에서 뺀다 (파생물)", report["untrack"])
     show("지운다 (파생물 디렉터리)", report["delete_derived"])

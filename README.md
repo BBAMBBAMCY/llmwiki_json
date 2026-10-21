@@ -120,7 +120,7 @@ llmwiki adopt ~/old-wiki --apply      # 바꾸고 build·validate·lint 결과�
 llmwiki repair --dry-run              # 어긋난 block 이 남았는지
 ```
 
-`adopt`는 `wiki/`·`raw/`를 건드리지 않습니다(전후 `wiki/**/*.json` sha256 목록이 다르면 멈춘다). INIT.md의 로컬 규칙은 코드 repo의 INIT.md 이력 중 가장 가까운 판과 비교해 `LOCAL.md`로 옮기고, upstream 줄을 고쳐 쓴 자리는 "검토 필요" 표지와 함께 넣습니다. 정본이 옛 스키마 판이면 lock에 그 판을 적어 두고 다음 `llmwiki update`(또는 `llmwiki migrate --apply`)가 옮깁니다.
+`adopt`는 `wiki/`·`raw/`를 건드리지 않습니다(전후 `wiki/**/*.json` sha256 목록이 다르면 멈춘다). 코드 디렉터리 안이라도 코드 repo에 같은 경로가 없는 파일(직접 만든 스크립트 같은 것)은 지우지 않고 "남긴다" 목록으로 보여 줍니다 — 옮길 곳은 직접 정합니다. INIT.md의 로컬 규칙은 코드 repo의 INIT.md 이력 중 가장 가까운 판과 비교해 `LOCAL.md`로 옮기고, upstream 줄을 고쳐 쓴 자리는 "검토 필요" 표지와 함께 넣습니다. 정본이 옛 스키마 판이면 lock에 그 판을 적어 두고 다음 `llmwiki update`(또는 `llmwiki migrate --apply`)가 옮깁니다.
 
 ### 갱신
 
