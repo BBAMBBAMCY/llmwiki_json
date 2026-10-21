@@ -162,7 +162,16 @@ args=""
 envs=""
 want_env=0
 for a in "$@"; do
-    if [ "$want_env" -eq 1 ]; then envs="$envs $a"; want_env=0; continue; fi
+    if [ "$want_env" -eq 1 ]; then
+        # 실제 Claude Code CLI 의 -e 는 여러 값을 받는다 — 다음 옵션이나 `--` 가 나올 때까지 전부 환경변수로 읽고,
+        # KEY=VALUE 가 아니면 거부한다(-e 뒤에 서버 이름을 두면 이름까지 먹혀 등록이 실패하던 버그). codex 의 --env 는 하나다.
+        case $a in
+            --|-*) want_env=0 ;;
+            *=*) envs="$envs $a"; [ "$self" = claude ] || want_env=0; continue ;;
+            *) if [ "$self" = claude ]; then echo "Invalid environment variable format: $a" >&2; exit 1; fi
+               envs="$envs $a"; want_env=0; continue ;;
+        esac
+    fi
     case $a in
         --scope|user|--) continue ;;
         -e|--env) want_env=1; continue ;;
@@ -1095,6 +1104,15 @@ class VerifyTest(InstallerCase):
         self.assertIn("ok   probe-silent-on-noise:", out)
         self.assertIn("ok   fail-open:", out)
         self.assertIn("FAIL codex.trust", out)
+
+    def test_an_empty_wiki_is_a_fresh_install_not_a_failure(self) -> None:
+        """새로 설치한 빈 위키 — 내용 검사(probe)는 건너뛰고 FAIL 로 치지 않는다."""
+        (self.clone / "wiki" / "concepts" / "corpus.json").unlink()
+        self.run_installer("install", "--claude", "--no-mcp", "--no-bun", "-q")
+        out = self.run_installer("verify", "--claude", "-q").stdout     # codex 를 빼면 남는 FAIL 이 없다
+        for name in ("corpus", "probe-query", "probe-search", "probe-injects"):
+            self.assertNotIn(f"FAIL {name}", out)
+        self.assertIn("빈 위키", out)
 
     def test_verify_flags_a_stale_command_after_the_clone_moves(self) -> None:
         self.install()

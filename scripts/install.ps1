@@ -637,7 +637,7 @@ function Add-Mcp([string]$Client, [string]$Name, [string]$PyPath, [string]$Scrip
     # 데이터 repo 가 있으면 LLMWIKI_ROOT 를 함께 기록한다 (install.sh 의 mcp_add 와 같다)
     if ($script:Data) {
         $a = switch ($Client) {
-            'claude' { @('mcp', 'add', '--scope', 'user', '-e', "LLMWIKI_ROOT=$($script:Data)", $Name, '--', $PyPath, $ScriptPath, 'mcp') }
+            'claude' { @('mcp', 'add', '--scope', 'user', $Name, '-e', "LLMWIKI_ROOT=$($script:Data)", '--', $PyPath, $ScriptPath, 'mcp') }
             'codex'  { @('mcp', 'add', $Name, '--env', "LLMWIKI_ROOT=$($script:Data)", '--', $PyPath, $ScriptPath, 'mcp') }
         }
     } else {

@@ -626,7 +626,7 @@ mcp_points_at() { # client name script -> 등록된 서버가 그 스크립트�
 mcp_add() { # client name python script — 데이터 repo 가 있으면 LLMWIKI_ROOT 를 함께 기록한다
     if [ -n "$DATA" ]; then
         case $1 in
-            claude) claude mcp add --scope user -e "LLMWIKI_ROOT=$DATA" "$2" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
+            claude) claude mcp add --scope user "$2" -e "LLMWIKI_ROOT=$DATA" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
             codex) codex mcp add "$2" --env "LLMWIKI_ROOT=$DATA" -- "$3" "$4" mcp >/dev/null 2>&1 ;;
         esac
         return
