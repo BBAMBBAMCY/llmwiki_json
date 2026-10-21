@@ -1,6 +1,6 @@
 [
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:alpha",
     "slug": "alpha",
     "title": "Alpha — Alpha platform",
@@ -74,7 +74,7 @@
     ]
   },
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:beta",
     "slug": "beta",
     "title": "Beta — RefModel Search Engine",
@@ -148,7 +148,7 @@
     ]
   },
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:terminology-mapping",
     "slug": "terminology-mapping",
     "title": "Terminology Mapping",
@@ -224,7 +224,7 @@
     ]
   },
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:sample-topic",
     "slug": "sample-topic",
     "title": "Sample Topic",
@@ -296,7 +296,7 @@
     ]
   },
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:omop-vocabulary",
     "slug": "omop-vocabulary",
     "title": "Reference Vocabulary",
@@ -370,7 +370,7 @@
     ]
   },
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:review-queue",
     "slug": "review-queue",
     "title": "Review Queue",
@@ -436,7 +436,7 @@
     ]
   },
   {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "id": "page:knowledge-integrity",
     "slug": "knowledge-integrity",
     "title": "Knowledge Integrity",

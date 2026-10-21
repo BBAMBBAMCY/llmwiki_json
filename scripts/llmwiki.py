@@ -50,11 +50,13 @@ try:  # package import (bench: `from scripts import llmwiki`)
     from . import llmwiki_text as T
     from . import llmwiki_index as search_index
     from . import llmwiki_paths as P
+    from . import llmwiki_migrate as M
 except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_text as T  # type: ignore[no-redef]
     import llmwiki_index as search_index  # type: ignore[no-redef]
     import llmwiki_paths as P  # type: ignore[no-redef]
+    import llmwiki_migrate as M  # type: ignore[no-redef]
 
 DEFAULT_ROOT = P.CODE_ROOT
 ENV_ROOT = P.ENV_ROOT
@@ -227,10 +229,10 @@ class Workspace:
         except ValueError:
             return resolved.as_posix()
 
-    def load_documents(self) -> list[tuple[str, dict[str, Any]]]:
-        """(relative shard path, page) pairs, sorted by page id."""
+    def load_documents(self, source: Path | None = None) -> list[tuple[str, dict[str, Any]]]:
+        """(relative shard path, page) pairs, sorted by page id. `source` 를 주면 그 디렉터리에서 읽는다."""
         docs: list[tuple[str, dict[str, Any]]] = []
-        source = self.pages_dir
+        source = source or self.pages_dir
         if not source.exists():
             return docs
         for path in sorted(source.rglob("*.json")):
@@ -1678,8 +1680,8 @@ def section(page: dict[str, Any], block_id: str) -> list[dict[str, Any]]:
 
 
 # --------------------------------------------------------------------------- lint
-def lint(ws: Workspace) -> tuple[list[str], list[str]]:
-    docs = ws.load_documents()
+def lint(ws: Workspace, docs: list[tuple[str, dict[str, Any]]] | None = None) -> tuple[list[str], list[str]]:
+    docs = ws.load_documents() if docs is None else docs
     pages = [p for _, p in docs]
     validator = SchemaValidator.load(ws)
     by_slug: dict[str, dict[str, Any]] = {}
@@ -2621,6 +2623,133 @@ def query(ws: Workspace, text: str, limit: int = 10) -> list[dict[str, Any]]:
     return rows
 
 
+
+# --------------------------------------------------------------------------- schema 판
+SCHEMA_ERROR = re.compile(r": schema_version must be ")
+
+
+def data_schema_versions(ws: Workspace) -> list[str]:
+    """정본 page 들의 판 (낮은 것부터). page 가 없으면 lock 의 판, 그것도 없으면 빈 목록."""
+    versions = {str(page.get("schema_version") or "") for page in ws.load_pages()}
+    if not versions:
+        lock = P.read_lock(ws.root) or {}
+        versions = {str(lock["schema_version"])} if lock.get("schema_version") else set()
+    return sorted(versions, key=P.schema_key)
+
+
+def data_schema_version(ws: Workspace) -> str | None:
+    """정본의 스키마 판 — 판이 섞였으면 가장 낮은 것 (아직 덜 옮긴 것이다)."""
+    versions = data_schema_versions(ws)
+    return versions[0] if versions else None
+
+
+def schema_gate(ws: Workspace, command: str) -> None:
+    """쓰기 명령(ingest·edit·repair)은 정본의 판이 코드와 같을 때만 쓴다. 읽기와 hook 은 이 문을 지나지 않는다."""
+    versions = data_schema_versions(ws)
+    if not versions or versions == [SCHEMA_VERSION]:
+        return
+    if P.schema_key(versions[-1]) > P.schema_key(SCHEMA_VERSION):
+        raise WikiError(f"{command} 거부: 정본 schema {versions[-1]} 가 코드 schema {SCHEMA_VERSION} 보다 새것이다 — "
+                        "코드를 먼저 갱신하라 (`llmwiki update`)")
+    raise WikiError(f"{command} 거부: 정본 schema {', '.join(versions)} ≠ 코드 schema {SCHEMA_VERSION} — "
+                    "`llmwiki migrate --dry-run` 으로 바뀔 것을 보고 `llmwiki migrate --apply` 로 옮긴 뒤 다시 하라")
+
+
+def migrate(ws: Workspace, *, apply: bool = False) -> dict[str, Any]:
+    """정본을 코드의 스키마 판으로 옮긴다. 기본은 계획만 낸다(dry-run).
+
+    apply 는 바뀐 정본 전체를 `.llmwiki/migrate/wiki` 에 먼저 쓰고, 거기서 읽어 낸 page 로 validate 를
+    돌린다. 옮기기 전에 없던 error 가 하나라도 생기면(판이 안 맞는다는 error 는 옮기는 이유이니 빼고 센다)
+    원본을 그대로 두고 멈춘다. 통과하면 wiki/ 와 통째로 바꿔 끼우고 lock 의 판을 고친다.
+    """
+    docs = ws.load_documents()
+    versions = sorted({str(page.get("schema_version") or "") for _rel, page in docs}, key=P.schema_key)
+    newer = [v for v in versions if P.schema_key(v) > P.schema_key(SCHEMA_VERSION)]
+    if newer:
+        raise WikiError(f"migrate 거부: 정본 schema {newer[-1]} 가 코드 schema {SCHEMA_VERSION} 보다 새것이다 — "
+                        "코드를 먼저 갱신하라 (`llmwiki update`)")
+    files: dict[str, list[dict[str, Any]]] = {}
+    shapes: dict[str, bool] = {}
+    for path in sorted(ws.pages_dir.rglob("*.json")) if ws.pages_dir.exists() else []:
+        if path.name.startswith("."):
+            continue
+        value = json.loads(path.read_text(encoding="utf-8"))
+        files[ws.rel(path)] = value if isinstance(value, list) else [value]
+        shapes[ws.rel(path)] = isinstance(value, list)
+    changes: list[dict[str, Any]] = []
+    rewritten: dict[str, list[dict[str, Any]]] = {}
+    for rel, pages in files.items():
+        out = []
+        for page in pages:
+            try:
+                new = M.migrate_page(page)
+            except ValueError as exc:
+                raise WikiError(f"{rel}: {page.get('id')}: {exc}") from exc
+            if new != page:
+                changes.append({"page_id": page.get("id"), "file": rel, "diff": M.page_diff(page, new)})
+            out.append(new)
+        if out != pages:
+            rewritten[rel] = out
+    lock = P.read_lock(ws.root)
+    report: dict[str, Any] = {"dry_run": not apply, "from": versions, "to": SCHEMA_VERSION,
+                              "steps": [f"{a}→{b}" for v in versions for a, b, _ in M.chain(v)],
+                              "pages_changed": len(changes), "files_changed": len(rewritten),
+                              "changes": changes,
+                              "lock": (lock or {}).get("schema_version") if lock else None}
+    report["steps"] = list(dict.fromkeys(report["steps"]))
+    if not apply:
+        return report
+    if rewritten:
+        before = {e for e in lint(ws, docs)[0] if not SCHEMA_ERROR.search(e)}
+        stage_root = ws.root / P.DERIVED_DIR / "migrate"
+        shutil.rmtree(stage_root, ignore_errors=True)
+        stage = stage_root / "wiki"
+        stage_root.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(ws.pages_dir, stage)
+        for rel, pages in rewritten.items():
+            target = stage / Path(rel).relative_to(ws.rel(ws.pages_dir))
+            value: Any = pages if shapes[rel] else pages[0]
+            target.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        staged = ws.load_documents(stage)
+        after = set(lint(ws, staged)[0])
+        fresh = sorted(after - before)
+        if fresh:
+            shutil.rmtree(stage_root, ignore_errors=True)
+            raise WikiError("migrate 중단 — 옮긴 사본이 validate 를 통과하지 못해 원본을 그대로 둔다:\n"
+                            + "\n".join(fresh[:20]) + (f"\n… 외 {len(fresh) - 20}건" if len(fresh) > 20 else ""))
+        if not ws.fixtures:  # 기록은 정본의 wiki/log.jsonl 에 — 바꿔 끼울 사본에 미리 적어 함께 들어간다
+            entry = {"at": timestamp(), "action": "migrate", "from": versions, "to": SCHEMA_VERSION,
+                     "pages": len(changes)}
+            with (stage / "log.jsonl").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        old = stage_root / "wiki.old"
+        os.replace(ws.pages_dir, old)
+        try:
+            os.replace(stage, ws.pages_dir)
+        except OSError:
+            os.replace(old, ws.pages_dir)
+            raise
+        shutil.rmtree(stage_root, ignore_errors=True)
+        report["validated"] = {"errors_before": len(before), "errors_after": len(after)}
+    if lock is not None and lock.get("schema_version") != SCHEMA_VERSION:
+        P.write_lock(ws.root, {**lock, "schema_version": SCHEMA_VERSION, "updated": today()})
+        report["lock"] = SCHEMA_VERSION
+    if rewritten and not ws.fixtures:
+        report["build"] = build(ws)
+    return report
+
+
+def print_migrate(report: dict[str, Any]) -> None:
+    for item in report["changes"]:
+        print(f"{item['page_id']}  ({item['file']})")
+        for line in item["diff"]:
+            print(f"  {line}")
+    span = ", ".join(report["from"]) or "(page 없음)"
+    steps = " · ".join(report["steps"]) or "변환 없음"
+    print(f"schema {span} → {report['to']} [{steps}] — {report['pages_changed']} page, "
+          f"{report['files_changed']} 파일" + (" (dry-run — 아무것도 쓰지 않았다, --apply 로 적용)"
+                                              if report["dry_run"] else " 적용"))
+
 # --------------------------------------------------------------------------- CLI
 def emit(value: Any) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
@@ -2693,6 +2822,12 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("selector")
     out.add_argument("--fixtures", action="store_true")
 
+    mig = sub.add_parser("migrate", help="move the canonical pages to this code's schema version (dry-run by default)")
+    mig.add_argument("--dry-run", action="store_true", help="(default) print per-page changes, write nothing")
+    mig.add_argument("--apply", action="store_true", help="write to a staging copy, validate it, then swap it in")
+    mig.add_argument("--json", action="store_true", dest="as_json")
+    mig.add_argument("--fixtures", action="store_true")
+
     sub.add_parser("paths", help="print the resolved data root and its layout as JSON (viewer reads this)")
 
     log = sub.add_parser("log", help="append to or read wiki/log.jsonl")
@@ -2707,6 +2842,9 @@ def run(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ws = Workspace(args.root, getattr(args, "fixtures", False))
     command = args.command
+
+    if command in {"ingest", "edit", "repair"} and not args.dry_run:
+        schema_gate(ws, command)
 
     if command == "ingest":
         emit(ingest(ws, Path(args.input), args.type, args.project, args.summary,
@@ -2766,6 +2904,14 @@ def run(argv: list[str] | None = None) -> int:
     elif command == "outline":
         page, _ = resolve(ws, args.selector)
         emit(outline(page))
+    elif command == "migrate":
+        if args.dry_run and args.apply:
+            raise WikiError("--dry-run 과 --apply 는 함께 줄 수 없다")
+        report = migrate(ws, apply=args.apply)
+        if args.as_json:
+            emit(report)
+        else:
+            print_migrate(report)
     elif command == "paths":
         emit({**ws.layout.describe(), "root_source": P.root_source(args.root)})
     elif command == "log":

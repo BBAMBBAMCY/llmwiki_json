@@ -198,7 +198,7 @@ class InstallerCase(unittest.TestCase):
         # 개발 저장소와 다른, 일부러 깊은 경로에 clone 한다.
         self.clone = self.tmp / "somewhere" / "else" / "my-wiki"
         (self.clone / "scripts").mkdir(parents=True)
-        for name in ("llmwiki.py", "llmwiki_index.py", "llmwiki_context.py", "llmwiki_text.py", "llmwiki_paths.py",
+        for name in ("llmwiki.py", "llmwiki_index.py", "llmwiki_context.py", "llmwiki_text.py", "llmwiki_paths.py", "llmwiki_migrate.py",
                      "install.sh"):
             shutil.copy2(REPO / "scripts" / name, self.clone / "scripts" / name)
         (self.clone / "scripts" / "install.sh").chmod(0o755)

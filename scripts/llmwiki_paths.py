@@ -39,7 +39,7 @@ VERSION_FILE = "VERSION"
 
 # 정본 page 의 스키마 판. 이 값은 여기 한 곳에만 둔다 — validate·ingest·migrate·lock 이 모두 이것을 본다.
 # 바꿀 때는 llmwiki_migrate.MIGRATIONS 에 변환을, RELEASES 에 코드 판을 함께 넣는다.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # 데이터마다 다른 설정. 분리 모드에서는 `<data>/config/` 를 읽고, 없으면 `<code>/tools/config/` 의 기본값을 쓴다.
 # 어휘(tags)·대역 사전(glossary)은 위키마다 다른 내용이라 기본값이 없다 — 남의 위키 어휘로 검사하면 안 된다.

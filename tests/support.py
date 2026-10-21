@@ -233,3 +233,38 @@ class SplitCase(unittest.TestCase):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(page, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return target
+
+
+def fake_migration_source(source: str, target: str, *, broken: bool = False) -> str:
+    """임시 코드 repo 의 llmwiki_migrate.py 끝에 붙일 가짜 변환 (source → target).
+
+    판을 올리고 summary 끝에 표지를 붙인다 — dry-run 의 diff 와 apply 결과에서 눈에 보이게. `broken` 이면
+    validate 가 거절할 page 를 만든다 (type 을 없는 값으로)."""
+    name = "_fake_" + target.replace(".", "_")
+    body = (f"def {name}(page):\n"
+            f"    out = dict(page)\n"
+            f"    out['schema_version'] = {target!r}\n"
+            f"    out['summary'] = (out.get('summary') or '') + ' ({target})'\n"
+            + ("    out['type'] = 'nope'\n" if broken else "")
+            + "    return out\n\n\n"
+            f"MIGRATIONS[({source!r}, {target!r})] = {name}\n")
+    return "\n\n" + body
+
+
+def install_fake_schema(code: Path, steps: list[tuple[str, str]], *, version: str,
+                        broken: bool = False) -> None:
+    """임시 코드 repo 의 스키마를 steps 의 마지막 판으로 올리고 VERSION 을 version 으로 바꾼다."""
+    migrate = code / "scripts" / "llmwiki_migrate.py"
+    text = migrate.read_text(encoding="utf-8")
+    for source, target in steps:
+        text += fake_migration_source(source, target, broken=broken)
+    final = steps[-1][1]
+    text += f"\nRELEASES[{version!r}] = {final!r}\n"
+    migrate.write_text(text, encoding="utf-8")
+    paths = code / "scripts" / "llmwiki_paths.py"
+    source = paths.read_text(encoding="utf-8")
+    import re as _re
+    source, count = _re.subn(r'(?m)^SCHEMA_VERSION = "[^"]+"$', f'SCHEMA_VERSION = "{final}"', source)
+    assert count == 1
+    paths.write_text(source, encoding="utf-8")
+    (code / "VERSION").write_text(version + "\n", encoding="utf-8")
