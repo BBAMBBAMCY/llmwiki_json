@@ -883,13 +883,21 @@ private_choice() {
     case $PRIVATE in
         yes | no) return 0 ;;
     esac
+    # 이미 개인 저장소 remote 가 있으면(공개 코드 저장소가 아닌 remote) 묻지 않는다 — 그것을 쓴다.
+    _own=$("$PY" "$ROUTINE_CLI" --root "${DATA:-$REPO_ROOT}" own-remote 2>/dev/null || true)
+    if [ -n "$_own" ]; then
+        REMOTE_NAME=${_own%%"	"*}
+        say "  개인 저장소: 이미 붙어 있다 — $REMOTE_NAME → ${_own#*"	"}"
+        PRIVATE=no
+        return 0
+    fi
     if [ "$ASK" -eq 0 ] || [ ! -t 0 ]; then
         PRIVATE=no
         return 0
     fi
     say ""
-    say "  이 clone 은 origin 에서 코드 갱신을 받는 자리로 둔다."
-    say "  자기 위키는 개인 private 저장소로 밀어 올릴 수 있다."
+    say "  코드 갱신은 llmwiki update 가 공개 저장소에서 받는다(이 폴더 안에서)."
+    say "  위키는 개인 private 저장소로 밀어 올릴 수 있다 — 아직 붙은 개인 저장소가 없다."
     _answer=$(ask_line "  개인 private 저장소를 붙일까? [y/N]: ")
     case $_answer in
         y | Y | yes | YES) PRIVATE=yes ;;

@@ -568,6 +568,13 @@ class InstallLocationTest(InstallerCase):
                                 text=True).stdout.strip()
         self.assertEqual(origin, "https://example.invalid/llmwiki_json.git")
 
+    def test_an_already_attached_private_remote_is_not_asked_again(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.clone, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "git@example.invalid:me/my-wiki.git"], cwd=self.clone, check=True)
+        out = self.run_installer("install", "--claude", "--no-mcp", "--no-bun", "--here").stdout
+        self.assertIn("개인 저장소: 이미 붙어 있다 — origin → git@example.invalid:me/my-wiki.git", out)
+        self.assertNotIn("개인 private 저장소를 붙일까", out)
+
     def test_a_non_empty_path_is_refused(self) -> None:
         target = self.tmp / "busy"
         target.mkdir()

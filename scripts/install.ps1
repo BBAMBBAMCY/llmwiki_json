@@ -878,10 +878,21 @@ function Uninstall-Routine {
 # 밀어 올린다. 이미 붙어 있는 remote 는 이름이 같아도 덮어쓰지 않는다.
 function Resolve-PrivateChoice {
     if ($script:Private -in @('yes', 'no')) { return }
+    # 이미 개인 저장소 remote 가 있으면(공개 코드 저장소가 아닌 remote) 묻지 않는다 — 그것을 쓴다.
+    $own = ''
+    if ($Py -and (Test-Path -LiteralPath $RoutineCli -PathType Leaf)) {
+        $own = (& $Py $RoutineCli --root $(if ($script:Data) { $script:Data } else { $RepoRoot }) own-remote 2>$null | Select-Object -First 1)
+    }
+    if ($own) {
+        $parts = $own -split "`t", 2
+        $script:RemoteName = $parts[0]
+        Say "  개인 저장소: 이미 붙어 있다 — $($parts[0]) → $($parts[1])"
+        $script:Private = 'no'; return
+    }
     if (-not $Ask -or [Console]::IsInputRedirected) { $script:Private = 'no'; return }
     Say ''
-    Say '  이 clone 은 origin 에서 코드 갱신을 받는 자리로 둔다.'
-    Say '  자기 위키는 개인 private 저장소로 밀어 올릴 수 있다.'
+    Say '  코드 갱신은 llmwiki update 가 공개 저장소에서 받는다(이 폴더 안에서).'
+    Say '  위키는 개인 private 저장소로 밀어 올릴 수 있다 — 아직 붙은 개인 저장소가 없다.'
     $answer = Read-Answer '  개인 private 저장소를 붙일까? [y/N]: '
     if ($answer -notmatch '^(y|Y|yes|YES)$') { $script:Private = 'no'; return }
     $script:Private = 'yes'

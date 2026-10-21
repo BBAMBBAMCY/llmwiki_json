@@ -1032,6 +1032,31 @@ def gh_create(root: Path, name: str) -> tuple[bool, str]:
     return True, url.strip()
 
 
+def own_remote(root: Path) -> tuple[str, str]:
+    """이 폴더가 이미 가진 개인 저장소 remote (이름, 주소). 없으면 ("", "").
+
+    공개 코드 저장소(제자리 갱신이 받는 곳)를 가리키지 않는 remote 다. 지금 branch 가 따르는 remote 가 그런
+    것이면 그것, 아니면 그런 remote 중 첫 번째. 설치기는 이것이 있으면 개인 저장소를 붙일지 묻지 않는다.
+    """
+    try:
+        from . import llmwiki_repo as R
+    except ImportError:
+        import llmwiki_repo as R  # type: ignore[no-redef]
+    if not (root / ".git").exists():
+        return "", ""
+    found = R.remotes(root)
+    code = {R.remote_key(R.UPSTREAM_URL), R.remote_key(R.upstream_url(root))}
+    own = {name: url for name, url in found.items() if R.remote_key(url) not in code}
+    status, out = R.git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = out.strip() if status == 0 else ""
+    status, tracked = R.git(root, "config", "--get", f"branch.{branch}.remote")
+    tracked = tracked.strip() if status == 0 else ""
+    if tracked in own:
+        return tracked, own[tracked]
+    name = sorted(own)[0] if own else ""
+    return (name, own[name]) if name else ("", "")
+
+
 def git_setup(root: Path, *, url: str, create: str, remote: str,
               dry_run: bool) -> dict[str, Any]:
     """origin 은 건드리지 않는다. 개인 저장소는 별도 remote 로만 붙인다."""
@@ -1099,6 +1124,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="등록 상태와 마지막 실행")
     sub.add_parser("pending", help="미처리 raw 소스 목록")
 
+    sub.add_parser("own-remote", help="이미 붙은 개인 저장소 remote 를 '이름<TAB>주소' 로 낸다 (없으면 빈 줄)")
+
     g = sub.add_parser("git-setup", help="개인 private 저장소를 remote 로 붙인다")
     g.add_argument("--url", default="", help="이미 만들어 둔 private 저장소 주소")
     g.add_argument("--gh-create", default="", metavar="NAME",
@@ -1125,6 +1152,11 @@ def main(argv: list[str] | None = None) -> int:
                                 dry_run=args.dry_run)
         print(json.dumps(plan, ensure_ascii=False, indent=2))
         return 0 if plan.get("ok", True) else 1
+
+    if args.command == "own-remote":
+        name, url = own_remote(root)
+        print(f"{name}\t{url}" if name else "")
+        return 0
 
     if args.command == "uninstall":
         plan = uninstall_schedule(dry_run=args.dry_run)

@@ -543,6 +543,20 @@ class PrivateRemoteTest(RoutineCase):
                                    dry_run=False)
         self.assertFalse(report["ok"])
 
+    def test_an_existing_private_remote_is_found_so_the_installer_does_not_ask(self) -> None:
+        """이미 개인 저장소가 붙은 폴더(origin = 자기 위키 저장소)는 다시 묻지 않는다."""
+        self.init_repo()
+        self.assertEqual(self.cli("own-remote").stdout.strip(), "")          # remote 가 없다
+        self.git("remote", "add", "public", "git@github.com:BrilliantTiger/llmwiki_json.git")
+        self.assertEqual(self.cli("own-remote").stdout.strip(), "")          # 공개 코드 저장소뿐이다
+        self.git("remote", "add", "origin", "git@github.com:me/my-wiki.git")
+        self.git("remote", "add", "backup", "git@github.com:me/backup.git")
+        branch = git(self.root_path, "rev-parse", "--abbrev-ref", "HEAD")
+        self.git("config", f"branch.{branch}.remote", "origin")
+        self.assertEqual(self.cli("own-remote").stdout.strip(), "origin\tgit@github.com:me/my-wiki.git")
+        self.git("config", "--unset", f"branch.{branch}.remote")
+        self.assertEqual(routine.own_remote(self.root_path)[0], "backup")   # 따르는 것이 없으면 이름 순 첫 번째
+
     def test_a_silly_repo_name_is_refused_before_calling_gh(self) -> None:
         ok, detail = routine.gh_create(self.root_path, "not a name; rm -rf /")
         self.assertFalse(ok)
