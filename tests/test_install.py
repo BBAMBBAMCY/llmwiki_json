@@ -1107,3 +1107,75 @@ class TrustStateTest(InstallerCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------- llmwiki shim
+class ShimFormTest(unittest.TestCase):
+    """shim 의 두 모양 — POSIX sh 와 Windows cmd. 설치·실행·제거를 각각 본다."""
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="llmwiki-shim-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.repo = __import__("tests.support", fromlist=["_load"])._load(
+            "llmwiki_repo", REPO / "scripts" / "llmwiki_repo.py")
+        self.data = self.tmp / "data"
+        self.data.mkdir()
+        (self.data / "wiki").mkdir()
+        (self.data / "llmwiki.lock").write_text("{}\n", encoding="utf-8")
+        self._env = dict(os.environ)
+        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(self._env)))
+        os.environ["LLMWIKI_SHIM_DIR"] = str(self.tmp / "bin")
+        for key in ("LLMWIKI_ROOT", "LLMWIKI_DEFAULT_ROOT"):
+            os.environ.pop(key, None)
+
+    def test_posix_shim_install_run_remove(self) -> None:
+        report = self.repo.install_shim(sys.executable, code=REPO, data=self.data, windows=False)
+        path = Path(report["path"])
+        self.assertEqual((report["status"], path.name), ("written", "llmwiki"))
+        self.assertTrue(os.access(path, os.X_OK))
+        proc = subprocess.run([str(path), "paths"], capture_output=True, text=True, cwd=str(self.tmp))
+        self.assertEqual(json.loads(proc.stdout)["root"], str(self.data))
+        self.assertEqual(self.repo.install_shim(sys.executable, code=REPO, data=self.data, windows=False)["status"],
+                         "current")
+        self.assertFalse(report["on_path"])
+        self.assertIn('export PATH="', report["hint"])
+        self.assertEqual(self.repo.remove_shim(windows=False)["status"], "removed")
+        self.assertFalse(path.exists())
+
+    def test_windows_shim_install_run_remove(self) -> None:
+        report = self.repo.install_shim(r"C:\Program Files\Python312\python.exe", code=Path(r"C:\llmwiki code"),
+                                        data=Path(self.data), windows=True)
+        path = Path(report["path"])
+        self.assertEqual(path.name, "llmwiki.cmd")
+        raw = path.read_bytes()
+        self.assertIn(b"\r\n", raw)
+        text = raw.decode("utf-8")
+        self.assertTrue(text.startswith("@echo off\r\n"))
+        self.assertIn(self.repo.SHIM_MARKER, text)
+        self.assertIn(f'if not defined LLMWIKI_DEFAULT_ROOT set "LLMWIKI_DEFAULT_ROOT={self.data}"', text)
+        last = text.strip().splitlines()[-1]
+        self.assertEqual(last, '"C:\\Program Files\\Python312\\python.exe" "C:\\llmwiki code\\scripts\\llmwiki.py" %*')
+        self.assertIn("SetEnvironmentVariable", report["hint"])
+        # cmd.exe 없이 실행한다: 같은 줄을 이 Python 과 이 저장소로 바꿔 돌린다 (%* = 인자, set = 기본 데이터)
+        windows_shim = self.repo.install_shim(sys.executable, code=REPO, data=self.data, windows=True)
+        lines = Path(windows_shim["path"]).read_text(encoding="utf-8").strip().splitlines()
+        default = next(l for l in lines if "set \"LLMWIKI_DEFAULT_ROOT=" in l).split("=", 1)[1].rstrip('"')
+        # Windows 모양 경로(역슬래시)를 이 OS 의 경로로 되돌려 같은 프로그램을 부른다
+        program = [part.replace("\\", "/") if os.name != "nt" else part
+                   for part in lines[-1].split('"') if part.strip() and part.strip() != "%*"]
+        proc = subprocess.run([*program, "paths"], capture_output=True, text=True, cwd=str(self.tmp),
+                              env={**os.environ, "LLMWIKI_DEFAULT_ROOT": default})
+        self.assertEqual(json.loads(proc.stdout)["root"], str(self.data))
+        self.assertEqual(self.repo.shim_state(windows=True)["data"], str(self.data))
+        self.assertEqual(self.repo.remove_shim(windows=True)["status"], "removed")
+        self.assertFalse(Path(windows_shim["path"]).exists())
+
+    def test_a_foreign_file_is_never_overwritten_or_removed(self) -> None:
+        for windows in (False, True):
+            path = self.repo.shim_path(windows)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("someone else\n", encoding="utf-8")
+            self.assertEqual(self.repo.install_shim(sys.executable, code=REPO, windows=windows)["status"],
+                             "kept-foreign")
+            self.assertEqual(self.repo.remove_shim(windows=windows)["status"], "kept-foreign")
+            self.assertEqual(path.read_text(encoding="utf-8"), "someone else\n")

@@ -2999,6 +2999,16 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--post-pull", action="store_true", help=argparse.SUPPRESS)
     up.add_argument("--prior-commit", default="", help=argparse.SUPPRESS)
 
+    sh = sub.add_parser("shim", help="install/remove/show the user-level `llmwiki` command")
+    sh.add_argument("action", choices=("install", "remove", "status"))
+    sh.add_argument("--python", default=None, help="interpreter the shim runs (default: this one)")
+    sh.add_argument("--data", help="record this data repo as the default data root")
+    sh.add_argument("--windows", action="store_true", default=None, help="write the Windows .cmd form")
+    sh.add_argument("--posix", action="store_false", dest="windows", help="write the POSIX sh form")
+    sh.add_argument("--dry-run", action="store_true")
+    sh.add_argument("--field", help="status: print only this field")
+    sh.add_argument("--json", action="store_true", dest="as_json")
+
     gd = sub.add_parser("guides", help="data repo: regenerate CLAUDE.md/AGENTS.md (INIT.md + LOCAL.md) and the "
                                          "skills links (rewrites nothing that is already current)")
     gd.add_argument("--dry-run", action="store_true")
@@ -3110,6 +3120,28 @@ def run(argv: list[str] | None = None) -> int:
         target = Workspace(args.data) if args.data else ws
         return update(target, yes=args.yes, dry_run=args.dry_run, post_pull=args.post_pull,
                       prior=args.prior_commit)
+    elif command == "shim":
+        if args.action in ("install", "remove"):
+            report = (R.install_shim(args.python or sys.executable, data=Path(args.data) if args.data else None,
+                                     windows=args.windows, dry_run=args.dry_run)
+                      if args.action == "install" else R.remove_shim(windows=args.windows, dry_run=args.dry_run))
+            if args.as_json:
+                emit(report)
+            else:
+                words = {"written": "놓았다", "current": "이미 이 코드를 가리킨다", "would-write": "[dry-run] 놓는다",
+                         "kept-foreign": "같은 이름의 남의 파일이 있다 — 덮어쓰지 않는다",
+                         "removed": "지웠다", "absent": "없다", "would-remove": "[dry-run] 지운다"}
+                print(f"  llmwiki: {report['path']} — {words.get(report['status'], report['status'])}"
+                      + (f" (데이터 {report['data']})" if report.get("data") else ""))
+                if report.get("hint"):
+                    print("  " + report["hint"].replace("\n", "\n  "))
+            return 0 if report["status"] != "kept-foreign" else 1
+        else:
+            state = R.shim_state(args.windows)
+            if args.field:
+                print(state.get(args.field, ""))
+            else:
+                emit(state)
     elif command == "guides":
         if not ws.split:
             raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — 단일 repo 의 CLAUDE.md 는 손으로 둔다")
