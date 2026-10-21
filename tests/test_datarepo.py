@@ -311,6 +311,12 @@ class AdoptTest(SplitCase):
         # 한 번 더 하면 이미 데이터 repo 라고 거절한다
         self.assertIn("이미 데이터 repo", self.wiki("adopt", str(self.old), cwd=self.tmp, expect=2).stderr)
 
+    def test_the_dir_defaults_to_the_recorded_data_root(self) -> None:
+        """설치기를 --data 로 돌린 뒤의 `llmwiki adopt --dry-run` — shim 이 기록한 데이터를 본다."""
+        plan = json.loads(self.wiki("adopt", "--json", cwd=self.tmp, env={"LLMWIKI_DEFAULT_ROOT": str(self.old)}).stdout)
+        self.assertEqual(plan["root"], str(self.old))
+        self.assertIn("adopt 할 저장소를 준다", self.wiki("adopt", cwd=self.tmp, expect=2).stderr)
+
     def test_a_dirty_repo_is_refused(self) -> None:
         (self.old / "wiki" / "concepts" / "draft.json").write_text("[]", encoding="utf-8")
         self.assertIn("커밋되지 않은 변경", self.wiki("adopt", str(self.old), cwd=self.tmp, expect=2).stderr)

@@ -3050,7 +3050,8 @@ def build_parser() -> argparse.ArgumentParser:
     ini.add_argument("--no-git", action="store_true", help="do not git init / commit")
 
     ado = sub.add_parser("adopt", help="turn an existing single repo into a data repo (dry-run by default)")
-    ado.add_argument("dir")
+    ado.add_argument("dir", nargs="?", help="the repo to convert (default: the resolved data root, e.g. the "
+                                            "--data the installer recorded in the llmwiki shim)")
     ado.add_argument("--dry-run", action="store_true", help="(default) list what would be removed, moved, created")
     ado.add_argument("--apply", action="store_true")
     ado.add_argument("--no-commit", action="store_true", help="leave the result uncommitted")
@@ -3171,8 +3172,11 @@ def run(argv: list[str] | None = None) -> int:
     elif command == "adopt":
         if args.dry_run and args.apply:
             raise WikiError("--dry-run 과 --apply 는 함께 줄 수 없다")
+        target = Path(args.dir) if args.dir else ws.root
+        if not args.dir and ws.root == P.CODE_ROOT:
+            raise WikiError("adopt 할 저장소를 준다 — `llmwiki adopt <dir>` (설치기를 --data <dir> 로 돌렸으면 생략해도 된다)")
         try:
-            report = R.adopt(Path(args.dir), apply=args.apply, commit=not args.no_commit,
+            report = R.adopt(target, apply=args.apply, commit=not args.no_commit,
                              check=lambda root: R.run_checks(root))
         except (ValueError, RuntimeError) as exc:
             raise WikiError(str(exc)) from exc
