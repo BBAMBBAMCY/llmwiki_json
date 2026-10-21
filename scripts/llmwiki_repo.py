@@ -129,6 +129,9 @@ def sync_guides(data: Path, code: Path | None = None, *, dry_run: bool = False) 
     code = (code or P.CODE_ROOT).resolve()
     text = guide_text(data, code)
     report: dict[str, Any] = {"guides": {}, "skills": {}}
+    excluded = exclude_nested_code(data, code, dry_run=dry_run)
+    if excluded:
+        report["exclude"] = excluded
     for name in GUIDE_FILES:
         path = data / name
         try:
@@ -224,6 +227,42 @@ def default_groups(code: Path | None = None) -> dict[str, Any]:
     value = json.loads((code / "tools" / "config" / "groups.json").read_text(encoding="utf-8"))
     project = value.get("project") if isinstance(value.get("project"), dict) else {}
     return {**value, "project": {k: v for k, v in project.items() if k in GENERIC_GROUPS}}
+
+
+CODE_DIR_NAME = "llmwiki_json"   # 코드 repo 폴더 이름 — 저장소 이름(git clone 기본값) 그대로다
+
+
+def nested_code(data: Path, code: Path | None = None) -> str:
+    """코드 repo 가 데이터 repo 안에 있으면 그 상대 경로(posix), 아니면 ""."""
+    data = Path(data).resolve()
+    code = (code or P.CODE_ROOT).resolve()
+    if code == data or data not in code.parents:
+        return ""
+    return code.relative_to(data).as_posix()
+
+
+def exclude_nested_code(data: Path, code: Path | None = None, *, dry_run: bool = False) -> str:
+    """데이터 repo 안의 코드 repo 를 데이터 repo 의 git 이 보지 않게 `.git/info/exclude` 에 적는다.
+
+    기존 설치 폴더를 그대로 쓰면 코드가 그 폴더 안에 산다. 코드 자리는 기계마다 다를 수 있어 커밋되는
+    .gitignore 가 아니라 이 clone 에만 있는 exclude 에 적는다. 적은 줄(이미 있으면 그 줄)을 돌려준다.
+    """
+    rel = nested_code(data, code)
+    if not rel or not is_own_repo(Path(data)):
+        return ""
+    line = f"/{rel}/"
+    status, out = git(Path(data), "rev-parse", "--git-path", "info/exclude")
+    if status != 0 or not out.strip():
+        return ""
+    path = Path(out.strip())
+    path = path if path.is_absolute() else Path(data) / path
+    current = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if line in current.splitlines() or dry_run:
+        return line
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(current.rstrip("\n") + ("\n" if current.strip() else "")
+                    + "# llmwiki 코드 repo (이 폴더 안에 둔 clone)\n" + line + "\n", encoding="utf-8")
+    return line
 
 
 def gitignore_lines(existing: str) -> str:
@@ -442,9 +481,6 @@ def code_removals(target: Path, code: Path) -> tuple[list[str], list[str]]:
     return remove, sorted(keep)
 
 
-CODE_REMOTE = "llmwiki-code"
-
-
 def remote_key(url: str) -> str:
     """git remote 주소를 비교용으로 맞춘다 — ssh·https·.git·대소문자 차이를 지운다."""
     url = url.strip().rstrip("/")
@@ -467,31 +503,30 @@ def remotes(root: Path) -> dict[str, str]:
 def code_remotes(target: Path, code: Path) -> list[dict[str, str]]:
     """데이터 repo 가 될 target 의 remote 중 코드 repo 와 같은 저장소를 가리키는 것.
 
-    공개 저장소를 clone 해 그 안에 위키를 쌓은 옛 단일 repo 는 origin 이 코드 저장소다. 그대로 두면 데이터
-    repo 의 push 가 코드 저장소로 간다 — adopt 가 이름을 바꿔 push 대상에서 뺀다.
+    공개 저장소를 clone 해 그 안에 위키를 쌓은 옛 단일 repo 는 origin 이 코드 저장소다. remote 이름은 사용자의
+    것이라 바꾸지 않는다 — branch 가 그것을 따르지 않게만 한다.
     """
     keys = {remote_key(url) for url in remotes(code).values()}
     return [{"name": name, "url": url} for name, url in sorted(remotes(target).items())
-            if name != CODE_REMOTE and remote_key(url) in keys]
+            if remote_key(url) in keys]
 
 
 def detach_code_remotes(target: Path, found: list[dict[str, str]]) -> list[dict[str, str]]:
-    """code_remotes 를 llmwiki-code 로 이름을 바꾸고, 지금 branch 가 그것을 따르면 private 로(없으면 끊는다)."""
-    done: list[dict[str, str]] = []
+    """지금 branch 가 코드 저장소 remote 를 따르면, 코드 저장소가 아닌 remote 가 하나뿐일 때 그쪽으로 잇고
+    아니면 끊는다. remote 이름·주소는 그대로 둔다."""
     status, branch = git(target, "rev-parse", "--abbrev-ref", "HEAD")
     branch = branch.strip() if status == 0 else ""
     status, upstream_remote = git(target, "config", "--get", f"branch.{branch}.remote")
     upstream_remote = upstream_remote.strip() if status == 0 else ""
-    for i, item in enumerate(found):
-        new = CODE_REMOTE if i == 0 and CODE_REMOTE not in remotes(target) else f"{CODE_REMOTE}-{item['name']}"
-        status, out = git(target, "remote", "rename", item["name"], new)
-        if status != 0:
-            raise RuntimeError(f"git remote rename {item['name']} {new} 실패: {out}")
-        entry = {**item, "renamed": new}
+    names = {item["name"] for item in found}
+    own = sorted(name for name in remotes(target) if name not in names)
+    done: list[dict[str, str]] = []
+    for item in found:
+        entry = dict(item)
         if branch and item["name"] == upstream_remote:
-            if "private" in remotes(target) and git(target, "fetch", "-q", "private", branch, timeout=120.0)[0] == 0 \
-                    and git(target, "branch", "-u", f"private/{branch}")[0] == 0:
-                entry["branch_upstream"] = f"private/{branch}"
+            if len(own) == 1 and git(target, "fetch", "-q", own[0], branch, timeout=120.0)[0] == 0 \
+                    and git(target, "branch", "-u", f"{own[0]}/{branch}")[0] == 0:
+                entry["branch_upstream"] = f"{own[0]}/{branch}"
             else:
                 git(target, "branch", "--unset-upstream")
                 entry["branch_upstream"] = ""
@@ -511,6 +546,7 @@ def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
         raise ValueError(f"{target} 는 이미 데이터 repo 다 ({P.LOCK_NAME} 있음) — 갱신은 `llmwiki update`")
     is_git = is_own_repo(target)
     if is_git:
+        exclude_nested_code(target, code)          # 이 폴더 안에 clone 한 코드 repo 는 변경이 아니다
         status, out = git(target, "status", "--porcelain")
         if status != 0 or out.strip():
             raise ValueError(f"{target} 에 커밋되지 않은 변경이 있다 — 먼저 커밋하거나 치운다:\n{out[:800]}")
@@ -552,7 +588,8 @@ def adopt_plan(target: Path, code: Path | None = None) -> dict[str, Any]:
     leftover = sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir()
                       if p.name not in {".git", ".gitignore", "wiki", "raw", "config", "tools", "LOCAL.md",
                                         P.LOCK_NAME, *GUIDE_FILES, *(r.split("/")[0] for r in remove),
-                                        "index", ".claude", ".codex", P.DERIVED_DIR})
+                                        "index", ".claude", ".codex", P.DERIVED_DIR,
+                                        nested_code(target, code).split("/")[0]})
     return {"root": str(target), "code": str(code), "git": is_git, "remove": remove, "keep": keep, "move": moves,
             "untrack": untrack, "delete_derived": derived, "untrack_links": links, "create": create,
             "rewrite": [rel for rel in GUIDE_FILES if (target / rel).exists()], "local": local,
@@ -893,6 +930,8 @@ def install_shim(python: str, *, code: Path | None = None, data: Path | None = N
     data = data.resolve() if data and data.exists() else data
     path = shim_path(windows)
     text = shim_text(python, code, data, windows)
+    if data and Path(data).exists() and code.exists():
+        exclude_nested_code(Path(data), code, dry_run=dry_run)
     report: dict[str, Any] = {"path": str(path), "code": str(code), "data": str(data) if data else ""}
     state = shim_state(windows)
     if state["exists"] and not state["ours"]:

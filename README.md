@@ -105,18 +105,19 @@ python3 scripts/llmwiki.py repair --dry-run                             # 이미
 ### 신규 시작
 
 ```bash
-git clone https://github.com/BrilliantTiger/llmwiki_json ~/llmwiki-code
-python3 ~/llmwiki-code/scripts/llmwiki.py init ~/my-wiki     # 빈 데이터 repo + 첫 커밋
-~/llmwiki-code/scripts/install.sh --data ~/my-wiki           # hook·MCP·llmwiki 명령·지침 (Windows: install.ps1 -Data)
+git clone https://github.com/BrilliantTiger/llmwiki_json        # 코드 repo — 원하는 자리에 둔다
+python3 llmwiki_json/scripts/llmwiki.py init ~/my-wiki     # 빈 데이터 repo + 첫 커밋
+llmwiki_json/scripts/install.sh --data ~/my-wiki            # hook·MCP·llmwiki 명령·지침 (Windows: install.ps1 -Data)
 cd ~/my-wiki && llmwiki ingest raw/첫-소스.md --type source --project 내-프로젝트
 ```
 
 ### 기존 단일 repo를 전환
 
-옛 clone(코드와 위키가 한 저장소, 파생물까지 커밋됐을 수 있다)을 데이터 repo로 바꿉니다. 코드는 따로 clone한 최신 코드 repo의 것을 씁니다. 백업·사용자 수정 코드 확인·remote 정리·push까지 포함한 전체 절차(AI 에이전트가 그대로 따라 하는 판)는 [docs/upgrade.md](docs/upgrade.md)입니다.
+옛 clone(코드와 위키가 한 저장소, 파생물까지 커밋됐을 수 있다)을 데이터 repo로 바꿉니다. 위키 폴더는 그대로 쓰고, 최신 코드는 그 옆에 저장소 이름 그대로 `llmwiki_json/`으로 clone합니다. 백업·사용자 수정 코드 확인·remote 정리·push까지 포함한 전체 절차(AI 에이전트가 그대로 따라 하는 판)는 [docs/upgrade.md](docs/upgrade.md)입니다.
 
 ```bash
-~/llmwiki-code/scripts/install.sh --data ~/old-wiki
+git clone https://github.com/BrilliantTiger/llmwiki_json ~/llmwiki_json   # 코드 — 위키 폴더 옆, 저장소 이름 그대로
+~/llmwiki_json/scripts/install.sh --data ~/old-wiki
 llmwiki adopt ~/old-wiki --dry-run    # 지울 코드·옮길 설정·추적에서 뺄 파생물·LOCAL.md 로 옮길 줄을 본다
 llmwiki adopt ~/old-wiki --apply      # 바꾸고 build·validate·lint 결과를 보고, 한 커밋으로 남긴다
 llmwiki repair --dry-run              # 어긋난 block 이 남았는지

@@ -2825,11 +2825,9 @@ def print_adopt(report: dict[str, Any]) -> None:
     show("충돌 — apply 전에 정리한다", report["conflicts"])
     show("손대지 않고 남는 것", report["leftover"])
     for item in report.get("code_remotes") or []:
-        line = f"remote {item['name']} ({item['url']}) 는 코드 저장소다 — {R.CODE_REMOTE} 로 이름을 바꿔 push 대상에서 뺀다"
-        if "renamed" in item:
-            line = f"remote {item['name']} → {item['renamed']} (코드 저장소, push 대상에서 뺐다)"
-            if "branch_upstream" in item:
-                line += f"; branch upstream → {item['branch_upstream'] or '없음 — 개인 저장소를 붙인 뒤 git push -u'}"
+        line = f"remote {item['name']} ({item['url']}) 는 코드 저장소다 — 이름은 그대로 두고, 위키를 그쪽으로 push 하지 않는다"
+        if "branch_upstream" in item:
+            line += f"; branch upstream → {item['branch_upstream'] or '없음 — 개인 저장소를 붙인 뒤 git push -u'}"
         print(line)
     if report.get("wiki_unchanged"):
         print(f"wiki/ sha256 불변: {report['wiki_unchanged']['files']}개 파일 — raw/ {report['raw_unchanged']['files']}개 그대로")
@@ -2889,6 +2887,7 @@ def update(ws: Workspace, *, yes: bool = False, dry_run: bool = False, post_pull
         data = ws.root
         if not post_pull:
             if R.is_own_repo(data):
+                R.exclude_nested_code(data, code, dry_run=dry_run)
                 changes = R.dirty(data)
                 if changes:
                     raise R.UpdateStop(f"데이터 repo 에 커밋되지 않은 변경이 있다 — 먼저 커밋하거나 치운다:\n{changes[:800]}")

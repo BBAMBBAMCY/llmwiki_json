@@ -128,10 +128,17 @@ class UpgradeGuideTest(unittest.TestCase):
         self.assertIn("docs/upgrade.md", (REPO / "README.md").read_text(encoding="utf-8"))
         self.assertIn("upgrade.md", (REPO / "docs" / "install.md").read_text(encoding="utf-8"))
 
-    def test_adopt_renames_the_code_remote_as_the_guide_says(self) -> None:
+    def test_the_guide_invents_no_folder_or_remote_name(self) -> None:
+        """경로·remote 이름은 사용자의 것이다 — 절차서가 지어 붙인 이름(옛 `llmwiki-code`)을 쓰지 않는다."""
+        for text in (self.guide, (REPO / "README.md").read_text(encoding="utf-8")):
+            self.assertNotIn("llmwiki-code", text)
+        self.assertNotIn("remote rename", self.guide)
+
+    def test_the_code_goes_next_to_the_wiki_under_the_repo_name(self) -> None:
         from tests.support import _load
         repo = _load("llmwiki_repo_for_guide", REPO / "scripts" / "llmwiki_repo.py")
-        self.assertIn(f"`{repo.CODE_REMOTE}`", self.guide)
+        self.assertIn(f"폴더의 `{repo.CODE_DIR_NAME}`(예: `W` = `~/llmwiki` 이면 `C` = `~/{repo.CODE_DIR_NAME}`)", self.guide)
+        self.assertIn("git clone https://github.com/BrilliantTiger/llmwiki_json C", self.guide)
 
 
 class AppContractTest(unittest.TestCase):

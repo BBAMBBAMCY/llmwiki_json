@@ -352,17 +352,49 @@ class AdoptTest(SplitCase):
         self.assertEqual(plan["code_remotes"], [{"name": "origin", "url": "git@github.com:example/llmwiki"}])
         self.assertIn("remote origin", self.wiki("adopt", str(self.old), cwd=self.tmp).stdout)
         report = self.adopt("--apply")
-        self.assertEqual(report["code_remotes"][0]["renamed"], "llmwiki-code")
         self.assertEqual(report["code_remotes"][0]["branch_upstream"], "private/main")
-        self.assertEqual(sorted(git(self.old, "remote").split()), ["llmwiki-code", "private"])
+        # remote 이름·주소는 사용자의 것이다 — 그대로 둔다
+        self.assertEqual(sorted(git(self.old, "remote").split()), ["origin", "private"])
+        self.assertEqual(git(self.old, "remote", "get-url", "origin"), "git@github.com:example/llmwiki")
         self.assertEqual(git(self.old, "rev-parse", "--abbrev-ref", "@{u}"), "private/main")
 
     def test_without_a_private_remote_the_branch_upstream_is_dropped(self) -> None:
         self.track_code_origin()
         report = self.adopt("--apply")
         self.assertEqual(report["code_remotes"][0]["branch_upstream"], "")
-        self.assertEqual(git(self.old, "remote").split(), ["llmwiki-code"])
+        self.assertEqual(git(self.old, "remote").split(), ["origin"])
         self.assertEqual(git(self.old, "config", "--get", "branch.main.remote", check=False), "")
+
+    def test_with_several_own_remotes_the_upstream_is_dropped_not_guessed(self) -> None:
+        self.track_code_origin()
+        for name in ("backup", "mine"):
+            bare = self.tmp / f"{name}.git"
+            git(self.tmp, "init", "-q", "--bare", str(bare))
+            git(self.old, "remote", "add", name, str(bare))
+        report = self.adopt("--apply")
+        self.assertEqual(report["code_remotes"][0]["branch_upstream"], "")
+        self.assertEqual(sorted(git(self.old, "remote").split()), ["backup", "mine", "origin"])
+
+    def test_the_code_can_live_inside_the_existing_folder(self) -> None:
+        """기존 설치 폴더를 그대로 쓴다 — 코드를 그 안(`llmwiki_json/`)에 clone 해도 adopt·데이터 git 이 맞는다."""
+        nested = self.old / "llmwiki_json"
+        shutil.move(str(self.code), str(nested))
+        self.code = nested
+        plan = self.adopt()                                  # 안에 둔 clone 은 커밋되지 않은 변경이 아니다
+        self.assertNotIn("llmwiki_json/", plan["leftover"])
+        self.assertNotIn("llmwiki_json", plan["remove"])
+        before = git(nested, "rev-parse", "HEAD")
+        self.adopt("--apply")
+        self.assertEqual(git(nested, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(nested, "status", "--porcelain"), "")
+        self.assertTrue((nested / "scripts" / "llmwiki.py").is_file())
+        self.assertEqual(git(self.old, "status", "--porcelain"), "")
+        self.assertNotIn("llmwiki_json", git(self.old, "ls-files"))
+        exclude = (self.old / ".git" / "info" / "exclude").read_text(encoding="utf-8")
+        self.assertIn("/llmwiki_json/", exclude)
+        self.assertNotIn("llmwiki_json", (self.old / ".gitignore").read_text(encoding="utf-8"))
+        lock = json.loads((self.old / "llmwiki.lock").read_text(encoding="utf-8"))
+        self.assertEqual(lock["code_path"], str(nested))
 
     def test_a_dirty_repo_is_refused(self) -> None:
         (self.old / "wiki" / "concepts" / "draft.json").write_text("[]", encoding="utf-8")
