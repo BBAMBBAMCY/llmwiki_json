@@ -973,6 +973,8 @@ def plan_sync(root: Path, base: str, new: str, local: LocalBlobs | None = None) 
             continue
         if b and n and here and "120000" not in (b[0], n[0], here[0]):
             merged = merge_text(root, rel, b[1], n[1])
+            if merged is None:                         # 줄을 더하기만 했으면 새 판의 같은 자리에 붙인다
+                merged = merge_additions((root / rel).read_bytes(), blob_bytes(root, b[1]), blob_bytes(root, n[1]))
             if merged is not None:
                 plan["merge"].append((rel, n[0], merged))
                 continue
@@ -990,6 +992,47 @@ def merge_text(root: Path, rel: str, base_blob: str, new_blob: str) -> bytes | N
         proc = subprocess.run(["git", "merge-file", "-p", str(root / rel), str(base_path), str(new_path)],
                               capture_output=True)
     return proc.stdout if proc.returncode == 0 else None
+
+
+def merge_additions(local: bytes, base: bytes, new: bytes) -> bytes | None:
+    """이 폴더가 base 에 줄을 **더하기만** 했으면 그 줄들을 new 의 같은 자리에 붙인다. 아니면 None.
+
+    INIT.md 끝에 개인 규칙을 더했는데 upstream 이 마지막 줄을 고치면 git 은 맞닿은 수정을 충돌로 본다. 더한
+    줄은 앞 줄(없으면 뒷 줄)을 닻으로 삼아 new 에서 그 줄이 한 번만 나오는 자리를 찾는다. 끝에 더한 줄은 new 의
+    끝에 붙인다. 닻을 못 찾거나, 지운·바꾼 줄이 있거나, upstream 도 같은 자리에 줄을 더했으면 None — 판정하지 않는다.
+    """
+    import difflib
+    try:
+        mine, old, fresh = (x.decode("utf-8").splitlines(keepends=True) for x in (local, base, new))
+    except UnicodeDecodeError:
+        return None
+    ops = difflib.SequenceMatcher(None, old, mine, autojunk=False).get_opcodes()
+    if any(tag in ("replace", "delete") for tag, *_ in ops):
+        return None
+    inserts = [(i1, mine[j1:j2]) for tag, i1, _, j1, j2 in ops if tag == "insert"]
+    # upstream 도 같은 자리에 줄을 더했으면 어느 쪽이 먼저인지 판정할 수 없다 — 충돌로 둔다
+    theirs = {i1 for tag, i1, *_ in difflib.SequenceMatcher(None, old, fresh, autojunk=False).get_opcodes()
+              if tag == "insert"}
+    if any(at in theirs for at, _ in inserts):
+        return None
+    out = list(fresh)
+    if out and not out[-1].endswith("\n"):
+        out[-1] += "\n"
+    placed: list[tuple[int, list[str]]] = []
+    for at, lines in inserts:
+        if at >= len(old):                             # 끝에 더했다
+            placed.append((len(fresh), lines))
+            continue
+        anchor_before = old[at - 1] if at > 0 else None
+        if anchor_before is not None and fresh.count(anchor_before) == 1:
+            placed.append((fresh.index(anchor_before) + 1, lines))
+        elif fresh.count(old[at]) == 1:
+            placed.append((fresh.index(old[at]), lines))
+        else:
+            return None
+    for index, lines in sorted(placed, key=lambda item: item[0], reverse=True):
+        out[index:index] = lines
+    return "".join(out).encode("utf-8")
 
 
 def apply_sync(root: Path, plan: dict[str, Any]) -> None:

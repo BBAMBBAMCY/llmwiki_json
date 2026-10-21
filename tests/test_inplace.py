@@ -109,6 +109,21 @@ class InPlaceUpdateTest(unittest.TestCase):
         self.assertIn("남긴다", self.update(folder).stdout)
         self.assertIn("# 내가 고친 줄", mine.read_text(encoding="utf-8"))
 
+    def test_rules_appended_right_under_an_upstream_edit_are_kept(self) -> None:
+        """upstream 이 INIT.md 마지막 줄을 고치고 사용자는 그 바로 밑에 규칙을 더했다 — git 은 충돌로 보지만
+        사용자는 줄을 더하기만 했으니 새 판 끝에 붙인다."""
+        folder = self.install_folder()
+        init = (self.work / "INIT.md").read_text(encoding="utf-8").rstrip("\n").splitlines()
+        init[-1] = init[-1] + " (upstream 이 고친 마지막 줄)"
+        (self.work / "INIT.md").write_text("\n".join(init) + "\n", encoding="utf-8")
+        git(self.work, "commit", "-qam", "upstream 이 마지막 줄을 고친다")
+        git(self.work, "push", "-q", str(self.upstream), "HEAD:main")
+        out = self.update(folder).stdout
+        self.assertIn("합친다", out)
+        text = (folder / "INIT.md").read_text(encoding="utf-8")
+        self.assertIn("(upstream 이 고친 마지막 줄)", text)
+        self.assertTrue(text.rstrip("\n").endswith("- 내 위키는 회의록을 raw/meetings 에 둔다."))
+
     def test_a_conflict_writes_nothing(self) -> None:
         folder = self.install_folder()
         target = folder / TEXT
