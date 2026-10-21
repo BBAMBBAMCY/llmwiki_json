@@ -142,3 +142,94 @@ class WorkspaceCase(unittest.TestCase):
         self.assertEqual(proc.returncode, expect,
                          f"argv={argv}\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return proc
+
+
+# --------------------------------------------------------------------------- 두 repo 운영
+# 코드 repo 에 실리는 것. 분리 모드 시험은 이것만 임시 코드 repo 로 복사한다 — 데모 위키는 따라가지 않는다.
+CODE_PATHS = ("scripts", "tools/schema", "tools/config", "tools/parity", "VERSION", "INIT.md", ".skills")
+
+
+def copy_code(dest: Path) -> Path:
+    """이 저장소의 코드 부분만 dest 에 복사한다 (wiki/·raw/·index/ 없이)."""
+    dest.mkdir(parents=True, exist_ok=True)
+    for rel in CODE_PATHS:
+        source = REPO / rel
+        if source.is_dir():
+            shutil.copytree(source, dest / rel, symlinks=True,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        elif source.is_file():
+            (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, dest / rel)
+    return dest
+
+
+def git(cwd: Path, *args: str, check: bool = True) -> str:
+    env = {**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+           "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "test@example.invalid"}
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, env=env)
+    if check and proc.returncode != 0:
+        raise AssertionError(f"git {' '.join(args)} 실패 ({cwd}):\n{proc.stdout}\n{proc.stderr}")
+    return proc.stdout.strip()
+
+
+def git_init(path: Path, message: str = "처음") -> str:
+    git(path, "init", "-q", "-b", "main")
+    git(path, "add", "-A")
+    git(path, "commit", "-q", "-m", message)
+    return git(path, "rev-parse", "HEAD")
+
+
+class SplitCase(unittest.TestCase):
+    """임시 디렉터리에 코드 repo(`code/`)와 데이터 repo(`data/`)를 따로 둔다.
+
+    데이터 repo 는 `llmwiki.lock` 이 있는 분리 모드 골격이다. 명령은 언제나 임시 코드 repo 의
+    스크립트로 돌린다 — 이 저장소의 정본·설정은 읽지도 쓰지도 않는다.
+    """
+
+    git_code = False
+
+    def setUp(self) -> None:
+        self.tmp = Path(tempfile.mkdtemp(prefix="llmwiki-split-")).resolve()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.code = copy_code(self.tmp / "code")
+        if self.git_code:
+            self.code_commit = git_init(self.code)
+        self.data = self.tmp / "data"
+        for rel in ("wiki/sources", "wiki/concepts", "raw", "config"):
+            (self.data / rel).mkdir(parents=True, exist_ok=True)
+        (self.data / "llmwiki.lock").write_text(json.dumps({
+            "lock_version": 1, "schema_version": llmwiki.SCHEMA_VERSION, "code_version": "0.0.0",
+            "code_commit": "", "code_path": str(self.code), "updated": FROZEN_DATE}) + "\n", encoding="utf-8")
+        self._env = dict(os.environ)
+        for name in ("LLMWIKI_ROOT", "LLMWIKI_DEFAULT_ROOT"):
+            os.environ.pop(name, None)
+        os.environ[llmwiki.ENV_NOW] = FROZEN_NOW
+        self.addCleanup(self._restore_env)
+
+    def _restore_env(self) -> None:
+        os.environ.clear()
+        os.environ.update(self._env)
+
+    def run_code(self, script: str, *argv: str, cwd: Path | None = None, expect: int | None = 0,
+                 env: dict[str, str] | None = None, stdin: str | None = None,
+                 ) -> subprocess.CompletedProcess[str]:
+        """임시 코드 repo 의 scripts/<script> 를 돌린다. 기본 cwd 는 데이터 repo (lock 으로 root 를 찾는다)."""
+        environ = {k: v for k, v in os.environ.items() if k not in ("LLMWIKI_ROOT", "LLMWIKI_DEFAULT_ROOT")}
+        environ[llmwiki.ENV_NOW] = FROZEN_NOW
+        environ.update(env or {})
+        proc = subprocess.run([sys.executable, str(self.code / "scripts" / script), *argv],
+                              cwd=str(cwd or self.data), capture_output=True, text=True,
+                              env=environ, input=stdin)
+        if expect is not None:
+            self.assertEqual(proc.returncode, expect,
+                             f"{script} {argv}\nstdout={proc.stdout}\nstderr={proc.stderr}")
+        return proc
+
+    def wiki(self, *argv: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return self.run_code("llmwiki.py", *argv, **kwargs)
+
+    def write_data_page(self, page: dict[str, Any], folder: str = "concepts") -> Path:
+        target = self.data / "wiki" / folder / f"{page['slug']}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(page, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return target

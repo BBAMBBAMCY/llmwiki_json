@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import statistics
 import sys
 from pathlib import Path
@@ -37,8 +36,6 @@ except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_context as C  # type: ignore[no-redef]
     import llmwiki_index as IDX  # type: ignore[no-redef]
-
-DEFAULT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def slug_of(value: Any) -> str:
@@ -135,7 +132,7 @@ def print_report(report: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="llmwiki_eval", description=__doc__.splitlines()[0])
     parser.add_argument("questions", help="[{q, gold_slug}] JSON 파일")
-    parser.add_argument("--root", help="위키 저장소 루트 (기본: $LLMWIKI_ROOT 또는 이 저장소)")
+    parser.add_argument("--root", help="위키 데이터 root (기본: $LLMWIKI_ROOT → 위로 찾은 llmwiki.lock → 이 저장소)")
     parser.add_argument("--max-bytes", type=int, default=C.MAX_BYTES)
     parser.add_argument("--max-tokens", type=int, default=C.MAX_TOKENS)
     parser.add_argument("--silence", type=float, default=0.0, help="무주입 문턱 raw_top×coverage (기본 0 = 끔)")
@@ -145,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--details", action="store_true", help="--json 에 질문마다의 결과를 싣는다")
     args = parser.parse_args(argv)
-    root = Path(args.root or os.environ.get(C.ENV_ROOT) or DEFAULT_ROOT)
+    root = C.resolve_root(args.root)
     report = evaluate(root, load_questions(Path(args.questions)), max_bytes=args.max_bytes,
                       max_tokens=args.max_tokens, silence_t=args.silence, hint_t=args.hint,
                       glossary=args.glossary)

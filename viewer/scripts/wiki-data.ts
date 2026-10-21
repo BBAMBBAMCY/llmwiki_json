@@ -26,9 +26,51 @@ export function resolvePython(): string | undefined {
   return undefined;
 }
 
+/** 데이터 root 와 그 안의 경로. 규칙은 `scripts/llmwiki_paths.py` 하나뿐이고 여기서는 그 답을 받아 쓴다
+ * (`llmwiki.py paths`): `--root` → `LLMWIKI_ROOT` → 위로 찾은 `llmwiki.lock` → 코드 repo 자신. */
+export interface WikiLayout {
+  root: string;
+  code: string;
+  mode: "single" | "split";
+  wiki: string;
+  index: string;
+  viewer_data: string;
+}
+
+const layouts = new Map<string, WikiLayout>();
+
+/** 코드 repo `codeRoot` 가 지금 보는 데이터 root. Python 이 없으면 단일 repo 배치로 본다. */
+export function resolveLayout(codeRoot: string, cwd: string = process.cwd()): WikiLayout {
+  const key = `${codeRoot}\0${cwd}\0${process.env.LLMWIKI_ROOT ?? ""}`;
+  const cached = layouts.get(key);
+  if (cached) return cached;
+  const fallback: WikiLayout = {
+    root: codeRoot, code: codeRoot, mode: "single", wiki: resolve(codeRoot, "wiki"),
+    index: resolve(codeRoot, "index"), viewer_data: resolve(codeRoot, "viewer", "public", "data"),
+  };
+  const python = resolvePython();
+  let layout = fallback;
+  if (python) {
+    const probe = spawnSync(python, [resolve(codeRoot, "scripts", "llmwiki.py"), "paths"],
+      {cwd, encoding: "utf-8"});
+    if (probe.status === 0) {
+      try { layout = {...fallback, ...(JSON.parse(probe.stdout) as Partial<WikiLayout>)}; } catch { /* 기본 배치 */ }
+    }
+  }
+  layouts.set(key, layout);
+  return layout;
+}
+
+/** 자식 CLI 가 같은 데이터 root 를 보게 하는 환경. */
+export function layoutEnv(layout: WikiLayout): NodeJS.ProcessEnv {
+  return {...process.env, LLMWIKI_ROOT: layout.root};
+}
+
 export interface WikiDataOptions {
-  /** 저장소 루트. 이 아래에 wiki/ 와 scripts/ 가 있다. */
+  /** 코드 repo 루트. 이 아래에 scripts/ 가 있다. */
   projectRoot: string;
+  /** 데이터 root 배치. 주지 않으면 resolveLayout(projectRoot). */
+  layout?: WikiLayout;
   /** build 가 성공한 뒤 호출된다. */
   onBuilt?: () => void;
   /** 저장이 연달아 일어날 때 묶는 시간(ms). */
@@ -41,7 +83,8 @@ export interface WikiDataOptions {
  * (debounce 동안 모인 경로는 중복을 빼고 한 번에 넘긴다). 경로는 힌트일 뿐이라 build 쪽이
  * mtime 스캔으로 힌트 밖의 변경을 잡으면 스스로 전량으로 떨어지고, 증분 build 가 실패하면
  * 여기서 인자 없는 build 로 한 번 더 시도한다. 경로 없이 부르면 처음부터 전량이다. */
-export function createWikiData({projectRoot, onBuilt, debounceMs = 250}: WikiDataOptions) {
+export function createWikiData({projectRoot, layout, onBuilt, debounceMs = 250}: WikiDataOptions) {
+  const env = layoutEnv(layout ?? resolveLayout(projectRoot));
   let building = false;
   let pending = false;
   let pendingFull = false;
@@ -57,7 +100,7 @@ export function createWikiData({projectRoot, onBuilt, debounceMs = 250}: WikiDat
       return;
     }
     const args = buildArgs(changed);
-    const child = spawn(python, args, {cwd: projectRoot, stdio: "inherit"});
+    const child = spawn(python, args, {cwd: projectRoot, env, stdio: "inherit"});
     child.on("error", (error) => {
       console.error(`[llmwiki] ${python} 실행 실패 — ${error.message}`);
       done(false);
@@ -142,8 +185,9 @@ export function changedPaths(previous: Map<string, string>, current: Map<string,
  * 컨테이너 감시자는 이 함수를 쓴다. */
 export function pollWikiData(options: WikiDataOptions & {intervalMs?: number}) {
   const {projectRoot, intervalMs = 2000} = options;
-  const wikiRoot = resolve(projectRoot, "wiki");
-  const {build} = createWikiData({...options, debounceMs: 0});
+  const layout = options.layout ?? resolveLayout(projectRoot);
+  const wikiRoot = layout.wiki;
+  const {build} = createWikiData({...options, layout, debounceMs: 0});
 
   build();
   let previous = snapshot(wikiRoot);
@@ -173,7 +217,8 @@ export function queryArgs(q: string, limit = 50): string[] {
   return ["scripts/llmwiki.py", "query", q, "--limit", String(limit)];
 }
 
-export function runWikiQuery(projectRoot: string, q: string, limit = 50): {hits: QueryHit[]} {
+export function runWikiQuery(projectRoot: string, q: string, limit = 50,
+                             layout: WikiLayout = resolveLayout(projectRoot)): {hits: QueryHit[]} {
   const text = q.trim();
   if (!text) return {hits: []};
   const python = resolvePython();
@@ -183,7 +228,7 @@ export function runWikiQuery(projectRoot: string, q: string, limit = 50): {hits:
   }
   const capped = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 50));
   const result = spawnSync(python, queryArgs(text, capped), {
-    cwd: projectRoot, encoding: "utf-8", maxBuffer: 2_000_000,
+    cwd: projectRoot, env: layoutEnv(layout), encoding: "utf-8", maxBuffer: 2_000_000,
   });
   if (result.status !== 0) {
     throw new Error((result.stderr || result.stdout || `query exit ${result.status}`).trim());

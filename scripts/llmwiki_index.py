@@ -55,9 +55,11 @@ from typing import Any, Iterable
 
 try:
     from . import llmwiki_text as T
+    from . import llmwiki_paths as P
 except ImportError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_text as T  # type: ignore[no-redef]
+    import llmwiki_paths as P  # type: ignore[no-redef]
 
 SCHEMA_VERSION = "3"
 DB_NAME = "search.sqlite"
@@ -367,8 +369,9 @@ _GLOSSARIES: dict[str, tuple[tuple[int, int], Glossary | None]] = {}
 
 
 def load_glossary(root: Path) -> Glossary | None:
-    """`<root>/tools/config/glossary.json` 의 `groups`. 파일이 그대로면 프로세스 안에서 다시 읽지 않는다."""
-    path = Path(root) / GLOSSARY_CONFIG
+    """위키 설정의 `glossary.json`(단일 repo `tools/config/`, 분리 모드 `config/`) 의 `groups`.
+    파일이 그대로면 프로세스 안에서 다시 읽지 않는다."""
+    path = P.Layout(root).config("glossary.json")
     try:
         stat = path.stat()
     except OSError:
@@ -1728,7 +1731,7 @@ def open_ro(path: Path, *, busy_timeout_ms: int = 2000, glossary: Glossary | Non
 
 def read_revision(root: Path) -> str:
     try:
-        value = json.loads((Path(root) / "index" / "revision.json").read_text(encoding="utf-8"))
+        value = json.loads((P.Layout(root).index / "revision.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return ""
     return str(value.get("revision") or "") if isinstance(value, dict) else ""

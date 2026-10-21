@@ -32,9 +32,15 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Iterable
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+try:  # package import
+    from . import llmwiki_paths as P
+except ImportError:  # run as a script or loaded from its file path
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import llmwiki_paths as P  # type: ignore[no-redef]
 
-ENV_ROOT = "LLMWIKI_ROOT"
+DEFAULT_ROOT = P.CODE_ROOT
+
+ENV_ROOT = P.ENV_ROOT
 ENV_STATE_DIR = "LLMWIKI_STATE_DIR"
 ENV_NOW = "LLMWIKI_NOW"
 # 에이전트 주기 작업이 놓이는 홈. 시험이 진짜 ~/.claude 를 건드리지 않게 한다.
@@ -126,7 +132,7 @@ def log_file() -> Path:
 
 
 def resolve_root(explicit: str | None) -> Path:
-    return Path(explicit or os.environ.get(ENV_ROOT) or DEFAULT_ROOT).resolve()
+    return P.resolve_root(explicit)
 
 
 def log(message: str) -> None:
@@ -1035,7 +1041,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmwiki-routine",
         description="raw/ 의 새 소스를 주기적으로 위키에 넣는 루틴")
-    parser.add_argument("--root", help=f"저장소 루트 (기본: ${ENV_ROOT} 또는 {DEFAULT_ROOT})")
+    parser.add_argument("--root", help=f"데이터 root (기본: ${ENV_ROOT} → 위로 찾은 {P.LOCK_NAME} → {DEFAULT_ROOT})")
     sub = parser.add_subparsers(dest="command", required=True)
 
     r = sub.add_parser("run", help="한 번 돈다 (git pull → 미처리 확인 → ingest → 커밋/push)")

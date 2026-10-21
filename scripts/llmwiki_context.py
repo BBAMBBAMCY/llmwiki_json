@@ -48,13 +48,15 @@ from typing import Any, Iterable
 
 try:  # package import (bench: `from scripts import llmwiki_context`)
     from . import llmwiki_index as IDX
+    from . import llmwiki_paths as P
 except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_index as IDX  # type: ignore[no-redef]
+    import llmwiki_paths as P  # type: ignore[no-redef]
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ROOT = P.CODE_ROOT
 
-ENV_ROOT = "LLMWIKI_ROOT"
+ENV_ROOT = P.ENV_ROOT
 ENV_DISABLE = "LLMWIKI_CONTEXT_DISABLE"
 ENV_MAX_BYTES = "LLMWIKI_CONTEXT_MAX_BYTES"
 ENV_MAX_TOKENS = "LLMWIKI_CONTEXT_MAX_TOKENS"
@@ -167,10 +169,15 @@ def env_float(name: str, fallback: float) -> float:
         return fallback
 
 
+def config_path(root: Path) -> Path:
+    """이 위키의 context.json — 단일 repo 는 `tools/config/`, 분리 모드는 `config/` (없으면 코드의 기본값)."""
+    return P.Layout(root).config("context.json")
+
+
 def config_float(root: Path, key: str) -> float | None:
     """`tools/config/context.json` 의 숫자 설정 하나. 없거나 숫자가 아니면 None."""
     try:
-        value = json.loads((Path(root) / ALWAYS_CONFIG).read_text(encoding="utf-8"))
+        value = json.loads(config_path(root).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
     item = value.get(key) if isinstance(value, dict) else None
@@ -465,7 +472,7 @@ def retrieve(root: Path, query: str, *, limit: int = MAX_PAGES, min_score: float
 
 # --------------------------------------------------------------------------- index path
 def index_path(root: Path) -> Path:
-    return Path(root) / "index" / IDX.DB_NAME
+    return P.Layout(root).index / IDX.DB_NAME
 
 
 def open_index(root: Path) -> tuple[IDX.Index | None, str]:
@@ -860,7 +867,7 @@ def build_indexed(idx: IDX.Index, root: Path, query: str, preamble: str, pinned:
 def always_slugs(root: Path) -> list[str]:
     """`tools/config/context.json` 의 always 목록. 없으면 아무것도 고정하지 않는다."""
     try:
-        value = json.loads((root / ALWAYS_CONFIG).read_text(encoding="utf-8"))
+        value = json.loads(config_path(root).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     items = value.get("always") if isinstance(value, dict) else None
@@ -871,7 +878,7 @@ def always_budget(root: Path, *, total: int = MAX_BYTES) -> int:
     """고정 몫. 설정이 아무리 크게 잡혀 있어도 전체의 절반을 넘지 않는다."""
     ceiling = max(1, total // 2)
     try:
-        value = json.loads((root / ALWAYS_CONFIG).read_text(encoding="utf-8"))
+        value = json.loads(config_path(root).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return min(ALWAYS_MAX_BYTES, ceiling)
     limit = value.get("always_max_bytes") if isinstance(value, dict) else None
@@ -1912,7 +1919,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="llmwiki-context",
         description="llmwiki_json 정본에서 질문 관련 근거를 찾아 컨텍스트로 주입한다")
-    parser.add_argument("--root", help=f"저장소 루트 (기본: ${ENV_ROOT} 또는 {DEFAULT_ROOT})")
+    parser.add_argument("--root", help=f"데이터 root (기본: ${ENV_ROOT} → 위로 찾은 {P.LOCK_NAME} → {DEFAULT_ROOT})")
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name, help_text in (("search", "관련 page 후보를 점수순으로 출력"),
@@ -1993,7 +2000,7 @@ def arm_watchdog(seconds: float) -> None:
 
 
 def resolve_root(explicit: str | None) -> Path:
-    return Path(explicit or os.environ.get(ENV_ROOT) or DEFAULT_ROOT).resolve()
+    return P.resolve_root(explicit)
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -2074,13 +2081,16 @@ def run(argv: list[str] | None = None) -> int:
             search_info["fallback"] = why
         # 파일이 있는데 묶음이 0 이면 읽지 못한 것이다 — 그때 질문은 넓혀지지 않는다
         glossary = IDX.load_glossary(root)
-        glossary_info = {"file": str(root / IDX.GLOSSARY_CONFIG), "present": (root / IDX.GLOSSARY_CONFIG).is_file(),
+        glossary_file = P.Layout(root).config("glossary.json")
+        glossary_info = {"file": str(glossary_file), "present": glossary_file.is_file(),
                          "groups": len(glossary.groups) if glossary else 0}
         print(json.dumps({
             "root": str(root),
             "exists": root.is_dir(),
             "wiki_pages": len(docs),
-            "index_present": sorted(p.name for p in (root / "index").glob("*.json")),
+            "layout": P.Layout(root).describe(),
+            "root_source": P.root_source(args.root),
+            "index_present": sorted(p.name for p in P.Layout(root).index.glob("*.json")),
             "search_index": search_info,
             "index_enabled": env_flag(ENV_INDEX, True),
             "silence_threshold": threshold(root, ENV_SILENCE, "silence", SILENCE_T_DEFAULT),

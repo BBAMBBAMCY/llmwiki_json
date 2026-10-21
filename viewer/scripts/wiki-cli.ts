@@ -7,7 +7,7 @@
  *         bun run scripts/wiki-cli.ts --tests      (백엔드 unittest 스위트) */
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
-import { resolvePython } from "./wiki-data";
+import { layoutEnv, resolveLayout, resolvePython } from "./wiki-data";
 
 const projectRoot = resolve(import.meta.dirname, "..", "..");
 const python = resolvePython();
@@ -23,5 +23,8 @@ const args = argv[0] === "--tests"
   ? ["-m", "unittest", "discover", "-s", "tests", "-v", ...argv.slice(1)]
   : ["scripts/llmwiki.py", ...argv];
 
-const result = spawnSync(python, args, {cwd: projectRoot, stdio: "inherit"});
+// 데이터 root 는 llmwiki_paths 규칙 그대로 (LLMWIKI_ROOT → 위로 찾은 llmwiki.lock → 이 저장소).
+// 시험 스위트는 저마다 임시 root 를 만들므로 물려주지 않는다.
+const env = argv[0] === "--tests" ? process.env : layoutEnv(resolveLayout(projectRoot));
+const result = spawnSync(python, args, {cwd: projectRoot, env, stdio: "inherit"});
 process.exit(result.status ?? 1);

@@ -12,18 +12,17 @@ RUN cd viewer && bun install --frozen-lockfile
 
 FROM base AS builder
 
-COPY scripts/*.py ./scripts/
-COPY tools/config ./tools/config
-COPY tools/schema ./tools/schema
-COPY wiki ./wiki
+# 데이터는 굽지 않는다 — 코드 repo 에 위키가 없어도(분리 모드) 이미지가 만들어진다.
 COPY viewer ./viewer
 
-RUN cd viewer && bun run build
+RUN cd viewer && bun run build:app
 
 # wiki 변경을 감시해 파생물을 다시 만든다. 감시 로직은 viewer/scripts 의 TypeScript 다.
+# 코드는 /repo, 데이터 root 는 /data 다 (단일 repo 모드면 compose 가 같은 저장소를 /data 에도 붙인다).
 FROM base AS watcher
 
 WORKDIR /repo
+ENV LLMWIKI_ROOT=/data
 CMD ["bun", "run", "/repo/viewer/scripts/watch-data.ts"]
 
 FROM nginx:1.27-alpine AS viewer

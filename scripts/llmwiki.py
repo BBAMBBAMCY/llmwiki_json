@@ -47,13 +47,16 @@ from typing import Any, Iterable
 try:  # package import (bench: `from scripts import llmwiki`)
     from . import llmwiki_text as T
     from . import llmwiki_index as search_index
+    from . import llmwiki_paths as P
 except ImportError:  # run as a script or loaded from its file path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import llmwiki_text as T  # type: ignore[no-redef]
     import llmwiki_index as search_index  # type: ignore[no-redef]
+    import llmwiki_paths as P  # type: ignore[no-redef]
 
-DEFAULT_ROOT = Path(__file__).resolve().parents[1]
-ENV_ROOT = "LLMWIKI_ROOT"
+DEFAULT_ROOT = P.CODE_ROOT
+ENV_ROOT = P.ENV_ROOT
+SCHEMA_VERSION = P.SCHEMA_VERSION
 ENV_NOW = "LLMWIKI_NOW"
 SEARCH_INDEX = search_index.DB_NAME
 
@@ -147,16 +150,21 @@ class Workspace:
     """Resolves every path the CLI touches, so tests can relocate the tree."""
 
     def __init__(self, root: str | os.PathLike[str] | None = None, fixtures: bool = False) -> None:
-        self.root = Path(root or os.environ.get(ENV_ROOT) or DEFAULT_ROOT).resolve()
+        self.root = P.resolve_root(root)
+        self.layout = P.Layout(self.root)
         self.fixtures = bool(fixtures)
 
     @property
+    def split(self) -> bool:
+        return self.layout.split
+
+    @property
     def knowledge(self) -> Path:
-        return self.root / "wiki"
+        return self.layout.wiki
 
     @property
     def fixtures_dir(self) -> Path:
-        return self.root / "tests" / "fixtures" / "pages"
+        return self.layout.fixtures
 
     @property
     def pages_dir(self) -> Path:
@@ -164,11 +172,11 @@ class Workspace:
 
     @property
     def raw(self) -> Path:
-        return self.root / "raw"
+        return self.layout.raw
 
     @property
     def index(self) -> Path:
-        return self.root / "index"
+        return self.layout.index
 
     @property
     def search_db(self) -> Path:
@@ -184,23 +192,29 @@ class Workspace:
 
     @property
     def public(self) -> Path:
-        return self.root / "viewer" / "public" / "data"
+        return self.layout.viewer_data
 
     @property
     def groups_path(self) -> Path:
-        return self.root / "tools" / "config" / "groups.json"
+        """읽을 groups.json — 데이터 쪽에 없으면 코드의 기본값."""
+        return self.layout.config("groups.json")
+
+    @property
+    def groups_write_path(self) -> Path:
+        """ingest 가 새 프로젝트 그룹을 적는 자리 — 언제나 데이터 쪽이다."""
+        return self.layout.config_dir / "groups.json"
 
     @property
     def tags_path(self) -> Path:
-        return self.root / "tools" / "config" / "tags.json"
+        return self.layout.config("tags.json")
 
     @property
     def schema_path(self) -> Path:
-        return self.root / "tools" / "schema" / "page.schema.json"
+        return self.layout.schema
 
     @property
     def log_path(self) -> Path:
-        return self.root / "wiki" / "log.jsonl"
+        return self.layout.wiki / "log.jsonl"
 
     def rel(self, path: Path) -> str:
         """Repo-relative POSIX path when possible — artifacts must not embed $HOME."""
@@ -966,7 +980,7 @@ def register_project_groups(ws: Workspace, projects: Iterable[str], *, write: bo
     groups = ws.load_groups()
     additions = auto_project_groups(projects, groups)
     if additions and write:
-        dump(ws.groups_path, merge_project_groups(groups, additions), pretty=True)
+        dump(ws.groups_write_path, merge_project_groups(groups, additions), pretty=True)
     return list(additions)
 
 
@@ -2605,7 +2619,8 @@ def emit(value: Any) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="llmwiki", description=__doc__.splitlines()[0])
-    parser.add_argument("--root", help="repository root (default: $LLMWIKI_ROOT or the repo)")
+    parser.add_argument("--root", help="data root (default: $LLMWIKI_ROOT, then the nearest llmwiki.lock "
+                                          "above the current directory, then this repo)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     ing = sub.add_parser("ingest", help="add one raw source as a canonical page")
@@ -2667,6 +2682,8 @@ def build_parser() -> argparse.ArgumentParser:
     out = sub.add_parser("outline", help="list heading blocks (cheap section index)")
     out.add_argument("selector")
     out.add_argument("--fixtures", action="store_true")
+
+    sub.add_parser("paths", help="print the resolved data root and its layout as JSON (viewer reads this)")
 
     log = sub.add_parser("log", help="append to or read wiki/log.jsonl")
     log.add_argument("--action")
@@ -2739,6 +2756,8 @@ def run(argv: list[str] | None = None) -> int:
     elif command == "outline":
         page, _ = resolve(ws, args.selector)
         emit(outline(page))
+    elif command == "paths":
+        emit({**ws.layout.describe(), "root_source": P.root_source(args.root)})
     elif command == "log":
         if args.action:
             emit(append_log(ws, {k: v for k, v in

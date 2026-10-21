@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "bun run build:data && vite build",
+    "build:app": "vite build",
     "build:demo": "bun run build:data:demo && vite build",
     "build:data": "bun run scripts/wiki-cli.ts build",
     "build:data:demo": "bun run scripts/wiki-cli.ts build --fixtures",
