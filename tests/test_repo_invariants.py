@@ -93,6 +93,15 @@ class SourceLayoutTest(unittest.TestCase):
         self.assertIn("index/search.sqlite*", ignored)
 
 
+class CodeConfigFixtureTest(unittest.TestCase):
+    @unittest.skipUnless((REPO / "raw" / "demo").is_dir(), "공개 저장소(데모 위키)에서만 대조한다")
+    def test_the_test_defaults_match_the_shipped_defaults(self) -> None:
+        """시험이 쓰는 코드 기본값 고정본은 공개 저장소의 tools/config 와 같아야 한다."""
+        fixture = REPO / "tests" / "fixtures" / "code-config"
+        for path in sorted(fixture.iterdir()):
+            self.assertEqual(path.read_bytes(), (REPO / "tools" / "config" / path.name).read_bytes(), path.name)
+
+
 class UpgradeGuideTest(unittest.TestCase):
     """docs/upgrade.md 는 AI 에이전트가 그대로 실행하는 절차서다 — 적힌 명령·옵션·키가 실제로 있어야 한다."""
 

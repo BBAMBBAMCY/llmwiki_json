@@ -75,10 +75,11 @@ class WorkspaceCase(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="llmwiki-test-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
-        for rel in ("tools/config/groups.json", "tools/schema/page.schema.json"):
+        for rel, source in (("tools/config/groups.json", CODE_CONFIG / "groups.json"),
+                            ("tools/schema/page.schema.json", REPO / "tools/schema/page.schema.json")):
             dest = self.root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(REPO / rel, dest)
+            shutil.copy2(source, dest)
         for rel in ("raw", "wiki/sources", "wiki/entities", "wiki/concepts",
                     "wiki/syntheses", "wiki/projects", "tests/fixtures/pages", "index",
                     "viewer/public/data"):
@@ -149,10 +150,18 @@ class WorkspaceCase(unittest.TestCase):
 CODE_PATHS = ("scripts", "tools/schema", "tools/config", "tools/parity", "VERSION", "INIT.md", ".skills", ".gitignore")
 
 
+# 코드 repo 의 설정 기본값(tools/config). 이 저장소의 tools/config 를 그대로 복사하지 않는다 — 한 폴더 설치에서는
+# 그것이 그 사용자의 설정(문턱·고정 항목·그룹 이름)이라 시험의 기대값이 그 위키에 따라 바뀐다.
+CODE_CONFIG = REPO / "tests" / "fixtures" / "code-config"
+
+
 def copy_code(dest: Path) -> Path:
-    """이 저장소의 코드 부분만 dest 에 복사한다 (wiki/·raw/·index/ 없이)."""
+    """이 저장소의 코드 부분만 dest 에 복사한다 (wiki/·raw/·index/ 없이). tools/config 는 기본값 고정본이다."""
     dest.mkdir(parents=True, exist_ok=True)
     for rel in CODE_PATHS:
+        if rel == "tools/config":
+            shutil.copytree(CODE_CONFIG, dest / rel)
+            continue
         source = REPO / rel
         if source.is_dir():
             shutil.copytree(source, dest / rel, symlinks=True,

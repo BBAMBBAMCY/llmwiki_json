@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support import REPO, llmwiki_context as ctx, make_page
+from tests.support import CODE_CONFIG, REPO, llmwiki_context as ctx, make_page
 
 INSTALLER = REPO / "scripts" / "install.sh"
 
@@ -217,10 +217,11 @@ class InstallerCase(unittest.TestCase):
         for path in sorted((REPO / "scripts").glob("*.py")) + [REPO / "scripts" / "install.sh"]:
             shutil.copy2(path, self.clone / "scripts" / path.name)
         (self.clone / "scripts" / "install.sh").chmod(0o755)
-        for rel in ("tools/config/groups.json", "tools/schema/page.schema.json"):
+        for rel, source in (("tools/config/groups.json", CODE_CONFIG / "groups.json"),
+                            ("tools/schema/page.schema.json", REPO / "tools/schema/page.schema.json")):
             dest = self.clone / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(REPO / rel, dest)
+            shutil.copy2(source, dest)
         pages = self.clone / "wiki" / "concepts"
         pages.mkdir(parents=True)
         (pages / "corpus.json").write_text(json.dumps(CORPUS, ensure_ascii=False, indent=2),
