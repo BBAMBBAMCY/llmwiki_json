@@ -3,7 +3,7 @@
 이 저장소를 clone 한 뒤 한 번 실행하면, Codex 와 Claude Code 가 모든 질문 앞에서
 이 위키의 정본 근거를 자동으로 붙이기 시작한다.
 
-v1.1.0 이전의 단일 repo 를 쓰던 사람은 [upgrade.md](upgrade.md) 를 따른다(AI 에이전트에게 읽혀 맡길 수 있다).
+install 은 현재 폴더에 설치할지 새 경로에 설치할지 묻는다(`--here` · `--path DIR`). 옛 판을 쓰던 사람은 [upgrade.md](upgrade.md) 를 따른다 — 설치한 폴더 그대로 갱신하고, AI 에이전트에게 읽혀 맡길 수 있다.
 
 ```bash
 git clone <repo> ~/anywhere/llmwiki_json
@@ -161,6 +161,8 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 | `--no-guides` | `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md` 를 건드리지 않는다 |
 | `--python P` | 쓸 인터프리터 절대경로. 자동 선택보다 우선하고, 공백이 있어도 된다 |
 | `--mcp-name N` | MCP 서버 이름 (기본 `llmwiki`) |
+| `--here` | 현재 폴더(이 설치기가 든 폴더)에 설치한다 — 묻지 않는다 |
+| `--path DIR` | 새 경로 DIR 에 이 폴더를 복사(git clone)하고 거기서 설치한다. DIR 은 비어 있거나 없어야 한다. 둘 다 주지 않으면 install 이 묻고, `--yes`·비대화형이면 현재 폴더다 |
 | `--data DIR` | 데이터 repo (`llmwiki init`/`adopt` 로 만든 것). hook 명령과 MCP 등록에 `LLMWIKI_ROOT=DIR` 을, `llmwiki` shim 에 기본 데이터로 기록한다. 주지 않은 verify·update 는 shim 이 기록한 것을 본다. 데이터 root 를 붙이거나 바꾸면 hook 명령이 바뀌므로 Codex 는 다시 신뢰를 묻는다 |
 | `--force` | 미지원 OS 나 미감지 클라이언트에서도 강행한다 |
 | `-q`, `--quiet` | 진행 로그를 줄인다 (클라이언트 실행 파일도 부르지 않는다) |

@@ -103,7 +103,7 @@ class UpgradeGuideTest(unittest.TestCase):
         ps1 = (REPO / "scripts" / "install.ps1").read_text(encoding="utf-8")
         used = set(re.findall(r"install\.sh[^\n`]*", self.guide))
         long_opts = {o for line in used for o in re.findall(r"(?<![\w-])--[a-z][a-z-]+", line)}
-        self.assertTrue({"--data", "--yes", "--ingest-routine"} <= long_opts, long_opts)
+        self.assertTrue({"--here", "--yes", "--ingest-routine"} <= long_opts, long_opts)
         for opt in long_opts | set(re.findall(r"`(--[a-z][a-z-]+) <", self.guide)):
             self.assertIn(opt, sh, f"install.sh 에 {opt} 가 없다")
             self.assertIn(opt, ps1, f"install.ps1 에 {opt} 가 없다")
@@ -113,8 +113,10 @@ class UpgradeGuideTest(unittest.TestCase):
 
     def test_cli_subcommands_exist(self) -> None:
         cli = (REPO / "scripts" / "llmwiki.py").read_text(encoding="utf-8")
-        commands = set(re.findall(r"`LW (\w+)", self.guide))
-        self.assertTrue({"adopt", "update", "repair", "guides"} <= commands, commands)
+        commands = set(re.findall(r"llmwiki\.py (?:--root W )?(\w+)", self.guide))
+        self.assertTrue({"update", "repair"} <= commands, commands)
+        self.assertIn("def update_in_place(", cli)                 # 2단계가 이 이름으로 새 코드를 알아본다
+        self.assertIn("update_in_place", self.guide)
         for name in commands:
             self.assertIn(f'add_parser("{name}"', cli, f"llmwiki {name} 가 없다")
 
@@ -134,11 +136,16 @@ class UpgradeGuideTest(unittest.TestCase):
             self.assertNotIn("llmwiki-code", text)
         self.assertNotIn("remote rename", self.guide)
 
-    def test_the_code_goes_next_to_the_wiki_under_the_repo_name(self) -> None:
+    def test_the_upgrade_stays_in_the_installed_folder(self) -> None:
+        """설치한 폴더 그대로 — 코드 repo 를 다른 폴더에 두는 절차(adopt·--data)를 쓰지 않는다."""
         from tests.support import _load
         repo = _load("llmwiki_repo_for_guide", REPO / "scripts" / "llmwiki_repo.py")
-        self.assertIn(f"폴더의 `{repo.CODE_DIR_NAME}`(예: `W` = `~/llmwiki` 이면 `C` = `~/{repo.CODE_DIR_NAME}`)", self.guide)
-        self.assertIn("git clone https://github.com/BrilliantTiger/llmwiki_json C", self.guide)
+        self.assertIn("설치한 폴더 그대로 업그레이드한다", self.guide)
+        for gone in ("adopt", "--data", "-Data"):
+            self.assertNotIn(gone, self.guide)
+        for rel in ("wiki/", "raw/", "tools/config/"):           # 절차서가 말하는 '손대지 않는 자리' = 코드가 정한 것
+            self.assertIn(rel, repo.NOT_CODE)
+            self.assertIn(f"`{rel}`", self.guide)
 
 
 class AppContractTest(unittest.TestCase):

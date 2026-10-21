@@ -4,7 +4,7 @@ AI가 유지보수하는 JSON-canonical 개인 지식 위키입니다. JSON이 �
 
 Karpathy의 LLM Wiki 패턴을 따릅니다. 질문할 때마다 원본을 다시 조립하는 RAG 앱이 아니라, LLM이 지식을 한 번 통합해 두고 계속 갱신하는 누적형 위키입니다.
 
-> **v1.1.0 이전부터 쓰던 사람:** 코드와 위키가 한 저장소에 있던 옛 구조는 AI 에이전트에게 맡겨 옮길 수 있습니다. Claude Code나 Codex에 "https://github.com/BrilliantTiger/llmwiki_json/blob/main/docs/upgrade.md 를 읽고 내 llmwiki 를 업그레이드해 줘"라고 하면 됩니다. 절차는 [docs/upgrade.md](docs/upgrade.md)에 있습니다.
+> **옛 판을 쓰던 사람:** 설치한 폴더 그대로 AI 에이전트에게 맡겨 업그레이드할 수 있습니다. Claude Code나 Codex에 "https://github.com/BrilliantTiger/llmwiki_json/blob/main/docs/upgrade.md 를 읽고 내 llmwiki 를 업그레이드해 줘"라고 하면 됩니다. 절차는 [docs/upgrade.md](docs/upgrade.md)에 있습니다.
 
 이 저장소에 담긴 `wiki/` 내용은 구조를 보여주기 위한 **데모 데이터**입니다. `raw/demo/`의 원본을 그대로 ingest해 만든 것이라 지우고 자기 소스로 다시 시작하면 됩니다.
 
@@ -88,42 +88,11 @@ python3 scripts/llmwiki.py repair --dry-run                             # 이미
 
 저장소 밖의 초안은 경로를 남기지 않습니다(`raw_ref`가 비고 history에는 파일 이름만 남습니다) — 원본이 있으면 frontmatter `raw:`에 적습니다.
 
-## 두 repo 운영
+## 설치 폴더와 갱신
 
-코드와 데이터를 다른 저장소에 둘 수 있습니다. **코드 repo**(이 저장소의 clone: `scripts/ viewer/ tools/schema/ tools/parity/ tests/ docs/ .skills/ INIT.md VERSION`)는 upstream에서 받기만 하고, **데이터 repo**에는 자기 위키만 둡니다.
+설치는 **폴더 하나**입니다. 설치한 폴더 안에 코드(`scripts/ viewer/ tools/ INIT.md VERSION …`)와 위키(`wiki/ raw/`)가 같이 있고, 갱신도 그 폴더 안에서 합니다. `~/opmd/llmwiki`에 설치했으면 `~/opmd/llmwiki`에서, `~/llmwiki_json`에 설치했으면 `~/llmwiki_json`에서 씁니다.
 
-```text
-<data>/  wiki/ raw/ config/ LOCAL.md llmwiki.lock CLAUDE.md AGENTS.md
-         .llmwiki/   파생물(index/, viewer-data/)과 작업 자리 — git 에서 빠진다
-```
-
-- `llmwiki.lock`이 있는 디렉터리가 데이터 repo입니다. 그 안의 어디서든 명령이 위로 올라가며 lock을 찾아 그 데이터를 봅니다. 데이터 root의 우선순위는 `--root` → `LLMWIKI_ROOT` → 현재 디렉터리에서 위로 찾은 `llmwiki.lock` → `llmwiki` shim에 기록한 기본 데이터(`LLMWIKI_DEFAULT_ROOT`) → 코드 repo 자신(단일 repo 모드)입니다. 모든 진입점(CLI·hook·MCP·루틴·평가·viewer)이 `scripts/llmwiki_paths.py`의 같은 함수를 씁니다.
-- 설정은 `<data>/config/`(groups·context·tags·glossary)에서 읽고, 없으면 코드의 `tools/config/`를 기본값으로 씁니다 — tag 허용 목록과 대역 사전은 위키마다 다른 내용이라 기본값을 빌려 쓰지 않습니다.
-- `CLAUDE.md`·`AGENTS.md`는 생성 파일입니다(코드의 `INIT.md` + 데이터의 `LOCAL.md`). 규칙을 바꾸려면 `LOCAL.md`를 고칩니다. `.claude/skills`·`.codex/skills`는 코드의 `.skills`를 가리킵니다(symlink를 못 만드는 Windows는 복사하고 update 때 다시 맞춥니다).
-- `llmwiki.lock`은 이 데이터를 어느 코드로 맞췄는지(`schema_version`·`code_version`·`code_commit`·`code_path`·`updated`) 적습니다. 정본의 스키마 판이 코드와 다르면 `ingest`·`edit`·`repair`는 거부하고(읽기와 hook 주입은 계속 돕니다) `llmwiki migrate`로 옮기게 합니다.
-
-### 신규 시작
-
-```bash
-git clone https://github.com/BrilliantTiger/llmwiki_json        # 코드 repo — 원하는 자리에 둔다
-python3 llmwiki_json/scripts/llmwiki.py init ~/my-wiki     # 빈 데이터 repo + 첫 커밋
-llmwiki_json/scripts/install.sh --data ~/my-wiki            # hook·MCP·llmwiki 명령·지침 (Windows: install.ps1 -Data)
-cd ~/my-wiki && llmwiki ingest raw/첫-소스.md --type source --project 내-프로젝트
-```
-
-### 기존 단일 repo를 전환
-
-옛 clone(코드와 위키가 한 저장소, 파생물까지 커밋됐을 수 있다)을 데이터 repo로 바꿉니다. 위키 폴더는 그대로 쓰고, 최신 코드는 그 옆에 저장소 이름 그대로 `llmwiki_json/`으로 clone합니다. 백업·사용자 수정 코드 확인·remote 정리·push까지 포함한 전체 절차(AI 에이전트가 그대로 따라 하는 판)는 [docs/upgrade.md](docs/upgrade.md)입니다.
-
-```bash
-git clone https://github.com/BrilliantTiger/llmwiki_json ~/llmwiki_json   # 코드 — 위키 폴더 옆, 저장소 이름 그대로
-~/llmwiki_json/scripts/install.sh --data ~/old-wiki
-llmwiki adopt ~/old-wiki --dry-run    # 지울 코드·옮길 설정·추적에서 뺄 파생물·LOCAL.md 로 옮길 줄을 본다
-llmwiki adopt ~/old-wiki --apply      # 바꾸고 build·validate·lint 결과를 보고, 한 커밋으로 남긴다
-llmwiki repair --dry-run              # 어긋난 block 이 남았는지
-```
-
-`adopt`는 `wiki/`·`raw/`를 건드리지 않습니다(전후 `wiki/**/*.json` sha256 목록이 다르면 멈춘다). 코드 디렉터리 안이라도 코드 repo에 같은 경로가 없는 파일(직접 만든 스크립트 같은 것)은 지우지 않고 "남긴다" 목록으로 보여 줍니다 — 옮길 곳은 직접 정합니다. INIT.md의 로컬 규칙은 코드 repo의 INIT.md 이력 중 가장 가까운 판과 비교해 `LOCAL.md`로 옮기고, upstream 줄을 고쳐 쓴 자리는 "검토 필요" 표지와 함께 넣습니다. 정본이 옛 스키마 판이면 lock에 그 판을 적어 두고 다음 `llmwiki update`(또는 `llmwiki migrate --apply`)가 옮깁니다.
+`scripts/install.sh`(Windows `install.ps1`)의 install은 **현재 폴더에 설치할지, 새 경로에 설치할지** 묻습니다. 새 경로를 적으면 이 폴더를 그 경로에 복사(git clone)하고 거기서 설치합니다. 묻지 않으려면 `--here`(현재 폴더) 또는 `--path DIR`(새 경로)을 줍니다. `--yes`나 비대화형이면 현재 폴더입니다.
 
 ### 갱신
 
@@ -133,7 +102,24 @@ llmwiki update --dry-run  # 아무것도 쓰지 않고 계획만
 llmwiki update --yes      # migrate 확인을 묻지 않는다
 ```
 
-순서는 데이터 repo dirty 검사 → 코드 repo `git pull --ff-only`(로컬 변경·로컬 commit이 있으면 멈춤) → 스키마 판이 다르면 `migrate --dry-run` 요약과 확인 → `migrate --apply` → 지침·skills 재생성, build·validate·lint(validate error면 커밋하지 않고 멈춤) → lock 갱신과 데이터 repo 커밋(`코드 v1.1.0→v1.2.0 (abc1234→def5678) 갱신, schema 1.1→1.2`) → 주기 루틴이 push하도록 설치돼 있을 때만 push입니다. 코드도 판도 그대로면 "이미 최신"만 냅니다. 코드 판(`VERSION`, semver)은 스키마 판이 바뀔 때 minor 이상을 올립니다.
+위키 commit이 있어도 됩니다 — `git pull`로 합치지 않고 **코드 파일만** 골라 얹습니다. 순서는 폴더가 깨끗한지 검사 → 공개 저장소를 이 폴더의 git으로 받기(숨은 ref `refs/llmwiki/upstream` 하나) → 이 폴더 코드가 어느 판 위에 있는지 찾기(지난번 기록 `tools/upstream.json` → 같은 이력이면 merge-base → 파일을 복사해 만든 저장소면 가장 가까운 판) → 그 판과 새 판으로 코드 파일마다 3-way(손대지 않은 파일은 새 판으로, 직접 고친 파일은 남기고, 양쪽이 고친 파일은 합치고, 같은 자리를 양쪽이 고쳤으면 아무것도 쓰지 않고 멈춤) → 얹은 새 코드로 스키마 판이 다르면 `migrate` → build·validate·lint(validate error면 커밋하지 않고 멈춤) → 이 폴더에 커밋(`코드 v1.1.0→v1.2.0 (abc1234→def5678) 갱신, schema 1.1→1.2`) → 주기 루틴이 push하도록 설치돼 있을 때만 push입니다. `wiki/ raw/ index/ viewer/public/data/ tools/config/ bench/`는 이 폴더의 데이터라 손대지 않습니다. 바뀐 것이 없으면 "이미 최신"만 냅니다. 코드 판(`VERSION`, semver)은 스키마 판이 바뀔 때 minor 이상을 올립니다.
+
+옛 판을 쓰던 사람은 AI 에이전트에게 [docs/upgrade.md](docs/upgrade.md)를 읽혀 맡기면 됩니다 — 같은 폴더에서 끝납니다.
+
+### 두 repo 운영 (선택)
+
+원하면 코드와 데이터를 다른 저장소에 둘 수도 있습니다. **코드 repo**(이 저장소의 clone)는 upstream에서 받기만 하고, **데이터 repo**에는 자기 위키만 둡니다.
+
+```text
+<data>/  wiki/ raw/ config/ LOCAL.md llmwiki.lock CLAUDE.md AGENTS.md
+         .llmwiki/   파생물(index/, viewer-data/)과 작업 자리 — git 에서 빠진다
+```
+
+- `llmwiki.lock`이 있는 디렉터리가 데이터 repo입니다. 그 안의 어디서든 명령이 위로 올라가며 lock을 찾아 그 데이터를 봅니다. 데이터 root의 우선순위는 `--root` → `LLMWIKI_ROOT` → 현재 디렉터리에서 위로 찾은 `llmwiki.lock` → `llmwiki` shim에 기록한 기본 데이터(`LLMWIKI_DEFAULT_ROOT`) → 코드 repo 자신(한 폴더 설치)입니다. 모든 진입점(CLI·hook·MCP·루틴·평가·viewer)이 `scripts/llmwiki_paths.py`의 같은 함수를 씁니다.
+- 설정은 `<data>/config/`(groups·context·tags·glossary)에서 읽고, 없으면 코드의 `tools/config/`를 기본값으로 씁니다 — tag 허용 목록과 대역 사전은 위키마다 다른 내용이라 기본값을 빌려 쓰지 않습니다.
+- `CLAUDE.md`·`AGENTS.md`는 생성 파일입니다(코드의 `INIT.md` + 데이터의 `LOCAL.md`). 규칙을 바꾸려면 `LOCAL.md`를 고칩니다. `.claude/skills`·`.codex/skills`는 코드의 `.skills`를 가리킵니다(symlink를 못 만드는 Windows는 복사하고 update 때 다시 맞춥니다).
+- `llmwiki.lock`은 이 데이터를 어느 코드로 맞췄는지(`schema_version`·`code_version`·`code_commit`·`code_path`·`updated`) 적습니다. 정본의 스키마 판이 코드와 다르면 `ingest`·`edit`·`repair`는 거부하고(읽기와 hook 주입은 계속 돕니다) `llmwiki migrate`로 옮기게 합니다.
+- 새로 만들기: `python3 <code>/scripts/llmwiki.py init <data>` 뒤 `<code>/scripts/install.sh --data <data>`. 한 폴더 설치를 나누기: `llmwiki adopt <폴더> --dry-run` → `--apply`(`wiki/`·`raw/` sha256 불변을 검증하고, 코드 repo에 없는 사용자 파일은 남기고, INIT.md의 로컬 규칙은 `LOCAL.md`로 옮긴다). 갱신은 같은 `llmwiki update`가 코드 repo를 `git pull --ff-only`하고 데이터 repo를 맞춥니다.
 
 `llmwiki`는 설치기가 사용자 영역에 놓는 명령입니다(POSIX `~/.local/bin/llmwiki`, Windows `%LOCALAPPDATA%\llmwiki\llmwiki.cmd`). shell profile과 PATH는 고치지 않고, 그 자리가 PATH에 없으면 더하는 방법만 알려 줍니다. 같은 이름의 남의 파일은 덮어쓰지도 지우지도 않습니다.
 
