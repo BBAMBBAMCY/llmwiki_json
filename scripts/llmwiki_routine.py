@@ -351,7 +351,25 @@ def unpushed_commits(root: Path, remote: str, branch: str) -> int:
     return int(out.strip() or 0) if code == 0 and out.strip().isdigit() else 0
 
 
+def read_only(root: Path, remote: str) -> bool:
+    try:
+        from . import llmwiki_repo as R
+    except ImportError:
+        import llmwiki_repo as R  # type: ignore[no-redef]
+    return R.read_only_remote(root, remote)
+
+
+def read_only_message(remote: str) -> str:
+    try:
+        from . import llmwiki_repo as R
+    except ImportError:
+        import llmwiki_repo as R  # type: ignore[no-redef]
+    return f"remote '{remote}' {R.READ_ONLY_PUSH}"
+
+
 def push_pending(root: Path, remote: str, branch: str) -> tuple[bool, str]:
+    if read_only(root, remote):
+        return False, read_only_message(remote)
     code, out = git(root, "push", remote, f"HEAD:{branch}", timeout=300.0)
     if code != 0:
         return False, f"밀리지 않은 커밋 push 실패: {out.splitlines()[-1] if out else code}"
@@ -392,6 +410,8 @@ def commit_and_push(root: Path, remote: str, branch: str,
         return True, f"{len(changed)}개 경로 커밋 (push 안 함)"
     if not has_remote(root, remote):
         return True, f"{len(changed)}개 경로 커밋 — remote '{remote}' 가 없어 push 하지 않는다"
+    if read_only(root, remote):
+        return False, f"{len(changed)}개 경로 커밋 — {read_only_message(remote)}"
     code, out = git(root, "push", remote, f"HEAD:{branch}", timeout=300.0)
     if code != 0:
         return False, f"{len(changed)}개 경로 커밋 — push 실패: {out.splitlines()[-1] if out else code}"
@@ -1078,6 +1098,13 @@ def git_setup(root: Path, *, url: str, create: str, remote: str,
         report["created"] = target
     if not target:
         report.update(ok=False, detail="--url 이나 --gh-create 중 하나가 필요하다")
+        return report
+    try:
+        from . import llmwiki_repo as R
+    except ImportError:
+        import llmwiki_repo as R  # type: ignore[no-redef]
+    if R.remote_key(target) == R.remote_key(R.UPSTREAM_URL):
+        report.update(ok=False, detail=f"{target} 는 공개 코드 저장소(읽기 전용)다 — 자기 위키를 둘 개인 저장소 주소를 준다")
         return report
     if existing and existing != target:
         report.update(ok=False,

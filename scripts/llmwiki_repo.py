@@ -873,6 +873,15 @@ def upstream_url(root: Path) -> str:
     return UPSTREAM_URL
 
 
+def read_only_remote(root: Path, remote: str) -> bool:
+    """remote 가 공개 코드 저장소(BrilliantTiger/llmwiki_json)인가. 그곳은 받기만 한다 — 위키를 밀지 않는다."""
+    url = remotes(Path(root)).get(remote, "")
+    return bool(url) and remote_key(url) == remote_key(UPSTREAM_URL)
+
+
+READ_ONLY_PUSH = "은(는) 공개 코드 저장소(읽기 전용, 받기만 한다)라 위키를 push 하지 않는다 — 개인 저장소 remote 를 붙인다"
+
+
 def fetch_upstream(root: Path, url: str, branch: str = UPSTREAM_BRANCH) -> str:
     status, out = git(Path(root), "fetch", "-q", "--no-tags", url, f"+refs/heads/{branch}:{UPSTREAM_REF}",
                       timeout=600.0)

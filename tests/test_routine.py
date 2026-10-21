@@ -557,6 +557,24 @@ class PrivateRemoteTest(RoutineCase):
         self.git("config", "--unset", f"branch.{branch}.remote")
         self.assertEqual(routine.own_remote(self.root_path)[0], "backup")   # 따르는 것이 없으면 이름 순 첫 번째
 
+    def test_the_read_only_code_repo_is_never_a_push_target(self) -> None:
+        """BrilliantTiger/llmwiki_json 은 받기만 한다 — 붙이지도, 밀지도 않는다."""
+        self.init_repo()
+        report = routine.git_setup(self.root_path, url="https://github.com/BrilliantTiger/llmwiki_json.git",
+                                   create="", remote="private", dry_run=False)
+        self.assertFalse(report["ok"])
+        self.assertIn("읽기 전용", report["detail"])
+        self.assertEqual(routine.has_remote(self.root_path, "private"), "")
+        self.git("remote", "add", "origin", "git@github.com:BrilliantTiger/llmwiki_json.git")
+        (self.root_path / "wiki" / "concepts" / "new.json").write_text("[]", encoding="utf-8")
+        branch = git(self.root_path, "rev-parse", "--abbrev-ref", "HEAD")
+        ok, detail = routine.commit_and_push(self.root_path, "origin", branch, push=True)
+        self.assertFalse(ok)
+        self.assertIn("읽기 전용", detail)
+        ok, detail = routine.push_pending(self.root_path, "origin", branch)
+        self.assertFalse(ok)
+        self.assertIn("읽기 전용", detail)
+
     def test_a_silly_repo_name_is_refused_before_calling_gh(self) -> None:
         ok, detail = routine.gh_create(self.root_path, "not a name; rm -rf /")
         self.assertFalse(ok)

@@ -2981,7 +2981,9 @@ def update_in_place_post(ws: Workspace, *, yes: bool, dry_run: bool, prior: str)
         return 0
     print(f"커밋 {sha[:7]}: {message}")
     target = R.routine_push_target(root)
-    if target:
+    if target and R.read_only_remote(root, target[0]):
+        print(f"push 하지 않았다 — remote '{target[0]}' {R.READ_ONLY_PUSH}")
+    elif target:
         status, branch = R.git(root, "rev-parse", "--abbrev-ref", "HEAD")
         status, out = R.git(root, "push", target[0], f"HEAD:{branch}", timeout=300.0)
         print(f"push {target[0]}/{branch}: {'완료' if status == 0 else '실패 — ' + out[-200:]}")
@@ -3044,7 +3046,9 @@ def update_post(ws: Workspace, *, yes: bool, dry_run: bool, prior: str) -> int:
     sha = R.commit_data(data, message)
     print(f"데이터 repo 커밋 {sha[:7]}: {message}" if sha else "데이터 repo 에 바뀐 것이 없다 — 커밋하지 않았다")
     target = R.routine_push_target(data)
-    if sha and target:
+    if sha and target and R.read_only_remote(data, target[0]):
+        print(f"push 하지 않았다 — remote '{target[0]}' {R.READ_ONLY_PUSH}")
+    elif sha and target:
         remote = target[0]
         status, branch = R.git(data, "rev-parse", "--abbrev-ref", "HEAD")
         status, out = R.git(data, "push", remote, f"HEAD:{branch}", timeout=300.0)
