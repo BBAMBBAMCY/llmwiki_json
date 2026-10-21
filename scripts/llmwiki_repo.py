@@ -132,11 +132,15 @@ def sync_guides(data: Path, code: Path | None = None, *, dry_run: bool = False) 
     for name in GUIDE_FILES:
         path = data / name
         try:
-            same = path.read_text(encoding="utf-8") == text
+            # 단일 repo 시절의 CLAUDE.md·AGENTS.md 는 INIT.md 를 가리키는 symlink 였다 — 그대로 쓰면 링크를
+            # 따라가 INIT.md 를 고친다(지운 뒤라면 되살린다). 생성 파일은 언제나 제 파일이다.
+            same = not path.is_symlink() and path.read_text(encoding="utf-8") == text
         except OSError:
             same = False
         report["guides"][name] = "current" if same else ("would-write" if dry_run else "written")
         if not same and not dry_run:
+            if path.is_symlink():
+                path.unlink()
             path.write_text(text, encoding="utf-8")
     for rel in SKILL_LINKS:
         report["skills"][rel] = sync_skills(data / rel, code / SKILLS_DIR, dry_run=dry_run)

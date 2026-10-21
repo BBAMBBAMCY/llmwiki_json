@@ -213,8 +213,9 @@ class AdoptTest(SplitCase):
             "- 새 소스가 주장을 뒤집어도 삭제하지 않고 history와 supersedes 관계를 남긴다.",
             "- 새 소스가 주장을 뒤집어도 삭제하지 않고 history와 supersedes 관계를 남긴다. (이 위키는 분기마다 정리한다)")
             + "\n- 회의록 소스는 raw/meetings 에 둔다.\n", encoding="utf-8")
-        shutil.copy2(self.old / "INIT.md", self.old / "CLAUDE.md")
-        shutil.copy2(self.old / "INIT.md", self.old / "AGENTS.md")
+        # 이 저장소처럼 CLAUDE.md·AGENTS.md 는 INIT.md 를 가리키는 symlink 다
+        (self.old / "CLAUDE.md").symlink_to("INIT.md")
+        (self.old / "AGENTS.md").symlink_to("INIT.md")
         shutil.copytree(REPO / "wiki", self.old / "wiki")
         (self.old / "raw").mkdir()
         (self.old / "raw" / "source.md").write_text("# 원본\n", encoding="utf-8")
@@ -286,6 +287,9 @@ class AdoptTest(SplitCase):
         self.assertIn("회의록 소스는 raw/meetings", local)
         claude = (self.old / "CLAUDE.md").read_text(encoding="utf-8")
         self.assertTrue(claude.startswith(R.GUIDE_HEADER))
+        for name in ("CLAUDE.md", "AGENTS.md"):                       # symlink 를 끊고 제 파일로 썼다
+            self.assertFalse((self.old / name).is_symlink(), name)
+        self.assertFalse((self.old / "INIT.md").exists())             # 링크를 따라가 INIT.md 를 되살리지 않는다
         self.assertIn("회의록 소스는 raw/meetings", claude)
         self.assertTrue((self.old / ".claude" / "skills").is_symlink())
         self.assertEqual((self.old / ".claude" / "skills").resolve(), (self.code / ".skills").resolve())
