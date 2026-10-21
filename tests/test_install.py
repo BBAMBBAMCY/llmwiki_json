@@ -530,6 +530,49 @@ class UninstallTest(InstallerCase):
         self.assertIn("남은 백업", proc.stdout)
 
 
+# --------------------------------------------------------------------------- 설치할 곳
+class InstallLocationTest(InstallerCase):
+    """install 은 현재 폴더에 설치할지 새 경로에 설치할지 정한다 — 설치는 폴더 하나다."""
+
+    def hook(self) -> str:
+        return ctx.installed_command(self.claude_settings)
+
+    def test_without_an_answer_it_installs_in_the_current_folder(self) -> None:
+        out = self.run_installer("install", "--claude", "--no-mcp", "--no-bun").stdout
+        self.assertIn(f"설치할 곳: 현재 폴더 {self.clone}", out)
+        self.assertIn(str(self.clone / "scripts" / "llmwiki_context.py"), self.hook())
+
+    def test_a_new_path_gets_a_copy_and_the_install_points_there(self) -> None:
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=self.clone, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=self.clone, check=True)
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "x"],
+                       cwd=self.clone, check=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://example.invalid/llmwiki_json.git"],
+                       cwd=self.clone, check=True)
+        target = self.tmp / "opmd" / "llmwiki"
+        self.run_installer("install", "--claude", "--no-mcp", "--no-bun", "-q", "--path", str(target))
+        self.assertTrue((target / "scripts" / "llmwiki.py").is_file())
+        self.assertTrue((target / "wiki" / "concepts" / "corpus.json").is_file())
+        self.assertIn(str(target / "scripts" / "llmwiki_context.py"), self.hook())
+        origin = subprocess.run(["git", "remote", "get-url", "origin"], cwd=target, capture_output=True,
+                                text=True).stdout.strip()
+        self.assertEqual(origin, "https://example.invalid/llmwiki_json.git")
+
+    def test_a_non_empty_path_is_refused(self) -> None:
+        target = self.tmp / "busy"
+        target.mkdir()
+        (target / "x").write_text("x", encoding="utf-8")
+        proc = self.run_installer("install", "--claude", "--no-mcp", "--no-bun", "--path", str(target), expect=1)
+        self.assertIn("비어 있지 않다", proc.stderr)
+        self.assertEqual(self.hook(), "")
+
+    def test_dry_run_with_a_path_creates_nothing(self) -> None:
+        target = self.tmp / "later"
+        out = self.run_installer("install", "--claude", "--no-mcp", "--no-bun", "--dry-run", "--path", str(target)).stdout
+        self.assertIn("dry-run", out)
+        self.assertFalse(target.exists())
+
+
 # --------------------------------------------------------------------------- 선택
 class ClientSelectionTest(InstallerCase):
     def test_claude_only_leaves_codex_untouched(self) -> None:

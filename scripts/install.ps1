@@ -76,6 +76,8 @@ $Ask             = $true
 $RemoteName      = 'private'
 # 데이터 repo (두 repo 운영). 비우면 shim 이 기록한 것, 그것도 없으면 이 저장소(단일 repo)다.
 $DataOpt         = ''
+$TargetOpt       = ''
+$Here            = $false
 $Data            = ''
 $Quiet        = $false
 
@@ -121,6 +123,9 @@ llmwiki_json 자동 컨텍스트 주입 설치 (Windows)
       -Python P       쓸 인터프리터 절대경로 — 자동 선택보다 항상 우선한다
       -McpName N      MCP 서버 이름 (기본 llmwiki)
       -QmdName N      (옛 옵션, 무시된다)
+      -Here           현재 폴더(이 설치기가 든 폴더)에 설치한다 — 묻지 않는다
+      -Path DIR       새 경로 DIR 에 이 폴더를 복사(git clone)하고 거기서 설치한다 — 묻지 않는다
+                      둘 다 주지 않으면 install 이 어디에 설치할지 묻는다 (-Yes·비대화형이면 현재 폴더)
       -Data DIR       데이터 repo (llmwiki init/adopt 로 만든 것). hook · MCP 에 LLMWIKI_ROOT 로,
                       llmwiki shim 에 기본 데이터로 기록한다
       -Force          미지원 OS 나 미감지 클라이언트에서도 강행한다
@@ -191,6 +196,10 @@ while ($i -lt $argv.Count) {
         '^(--data|-Data)$'                    { if (-not $value) { [Console]::Error.WriteLine("error: $a 에 데이터 repo 경로가 필요하다"); exit 2 }
                                               $DataOpt = $value; $i++ }
         '^--data=(.+)$'                       { $DataOpt = $Matches[1] }
+        '^(--here|-Here)$'                    { $Here = $true }
+        '^(--path|-Path)$'                    { if (-not $value) { [Console]::Error.WriteLine("error: $a 에 설치할 경로가 필요하다"); exit 2 }
+                                              $TargetOpt = $value; $i++ }
+        '^--path=(.+)$'                       { $TargetOpt = $Matches[1] }
         '^(--force|-Force)$'                  { $Force = $true }
         '^(--ingest-routine|-IngestRoutine)$' { if (-not $value) { [Console]::Error.WriteLine("error: $a 에 값이 필요하다"); exit 2 }
                                               $Routine = $value; $i++ }
@@ -784,6 +793,41 @@ function Read-Answer([string]$Prompt) {
     return [Console]::In.ReadLine()
 }
 
+# --------------------------------------------------------------- 설치할 곳
+# 설치는 폴더 하나다 — 그 폴더 안에 코드와 위키가 같이 있고, update 도 그 안에서 한다. 현재 폴더에 설치할지
+# 새 경로에 설치할지 묻는다(-Here · -Path DIR 이면 묻지 않는다, -Yes 나 비대화형이면 현재 폴더).
+function Select-Location {
+    if ($Here) { return }
+    $target = $TargetOpt
+    if (-not $target) {
+        $target = Read-Answer "설치할 곳 — 현재 폴더($RepoRoot)면 Enter, 새 경로에 설치하려면 그 경로를 적는다: "
+    }
+    if (-not $target) { Say "설치할 곳: 현재 폴더 $RepoRoot"; return }
+    if ($target -eq '~' -or $target.StartsWith('~/') -or $target.StartsWith('~\')) { $target = $HOME + $target.Substring(1) }
+    $target = [System.IO.Path]::GetFullPath($target, (Get-Location).Path)
+    if ((Test-Path -LiteralPath $target -PathType Container) -and ((Convert-Path -LiteralPath $target) -eq $RepoRoot)) {
+        Say "설치할 곳: 현재 폴더 $RepoRoot"; return
+    }
+    if ((Test-Path -LiteralPath $target) -and (Get-ChildItem -LiteralPath $target -Force | Select-Object -First 1)) {
+        Die "$target 가 비어 있지 않다 — 빈 경로나 없는 경로를 준다"
+    }
+    if ($DryRun) { Plan "이 폴더를 $target 에 복사하고(git clone) 그곳의 install.ps1 로 설치한다"; exit 0 }
+    Step "새 경로에 설치: $target"
+    $parent = Split-Path -Parent $target
+    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    & git -C $RepoRoot rev-parse --show-toplevel *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & git clone -q $RepoRoot $target
+        if ($LASTEXITCODE -ne 0) { Die "$target 로 복사하지 못했다" }
+        $origin = (& git -C $RepoRoot remote get-url origin 2>$null)
+        if ($origin) { & git -C $target remote set-url origin $origin }
+    } else {
+        Copy-Item -Recurse -LiteralPath $RepoRoot -Destination $target
+    }
+    & (Join-Path $target 'scripts/install.ps1') @argv '--here'
+    exit $LASTEXITCODE
+}
+
 function Resolve-RoutineChoice {
     if ($script:Routine -in @('claude', 'codex', 'none')) { return }
     if (-not $Ask -or [Console]::IsInputRedirected) { $script:Routine = 'none'; return }
@@ -898,7 +942,7 @@ function Install-DataGuides {
 # --------------------------------------------------------------- update
 # llmwiki update · install.sh update 와 같은 Python 구현(llmwiki.py update)을 부른다.
 function Invoke-Update {
-    Step '갱신 (코드 repo pull → 데이터 repo 맞춤)'
+    Step '갱신 (llmwiki update)'
     $a = @($WikiCli, 'update')
     if ($script:Data) { $a += @('--data', $script:Data) }
     if (-not $Ask) { $a += '--yes' }
@@ -948,6 +992,7 @@ try {
             }
         }
         'install' {
+            Select-Location
             Show-Detection
             Assert-Targets
             # 네트워크가 필요한 일은 전부 여기서 끝낸다 — 아래부터는 설정 쓰기다.

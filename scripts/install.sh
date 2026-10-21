@@ -68,6 +68,8 @@ ASK=1
 REMOTE_NAME=private
 # 데이터 repo (두 repo 운영). 비우면 shim 이 기록한 것, 그것도 없으면 이 저장소(단일 repo)다.
 DATA_OPT=""
+TARGET_OPT=""
+HERE=0
 DATA=""
 
 # 부트스트랩 대상은 Python(uv) 과 viewer 가 쓰는 Bun 이다. 저장소 규칙상
@@ -116,6 +118,9 @@ llmwiki_json 자동 컨텍스트 주입 설치
       --python P      쓸 인터프리터 절대경로 — 자동 선택보다 항상 우선한다
       --mcp-name N    MCP 서버 이름 (기본 llmwiki)
       --qmd-name N    (옛 옵션, 무시된다)
+      --here          현재 폴더(이 설치기가 든 폴더)에 설치한다 — 묻지 않는다
+      --path DIR      새 경로 DIR 에 이 폴더를 복사(git clone)하고 거기서 설치한다 — 묻지 않는다
+                      둘 다 주지 않으면 install 이 어디에 설치할지 묻는다 (--yes·비대화형이면 현재 폴더)
       --data DIR      데이터 repo (llmwiki init/adopt 로 만든 것). hook · MCP 에 LLMWIKI_ROOT 로,
                       llmwiki shim 에 기본 데이터로 기록한다
       --force         미지원 OS 나 미감지 클라이언트에서도 강행한다
@@ -149,6 +154,11 @@ llmwiki_json 자동 컨텍스트 주입 설치
 USAGE
 }
 
+# 새 경로에 설치할 때 그 경로의 설치기에 같은 인자를 넘긴다
+_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+ORIG_ARGS=""
+for _a in "$@"; do ORIG_ARGS="$ORIG_ARGS $(_q "$_a")"; done
+
 while [ $# -gt 0 ]; do
     case $1 in
         install | verify | uninstall | doctor | update) COMMAND=$1 ;;
@@ -167,6 +177,9 @@ while [ $# -gt 0 ]; do
         --qmd-name) LEGACY_QMD_FLAG=1; : "${2:?--qmd-name 에 이름이 필요하다}"; shift ;;
         --data) DATA_OPT=${2:?--data 에 데이터 repo 경로가 필요하다}; shift ;;
         --data=*) DATA_OPT=${1#--data=} ;;
+        --here) HERE=1 ;;
+        --path) TARGET_OPT=${2:?--path 에 설치할 경로가 필요하다}; shift ;;
+        --path=*) TARGET_OPT=${1#--path=} ;;
         --force) FORCE=1 ;;
         --ingest-routine) ROUTINE=${2:?--ingest-routine 에 claude/codex/none 이 필요하다}; shift ;;
         --ingest-routine=*) ROUTINE=${1#--ingest-routine=} ;;
@@ -758,6 +771,41 @@ uninstall_mcp() {
     fi
 }
 
+# --------------------------------------------------------------- 설치할 곳
+# 설치는 폴더 하나다 — 그 폴더 안에 코드와 위키가 같이 있고, update 도 그 안에서 한다. 현재 폴더에 설치할지
+# 새 경로에 설치할지 묻는다(--here · --path DIR 이면 묻지 않는다, --yes 나 비대화형이면 현재 폴더).
+choose_location() {
+    [ "$HERE" -eq 1 ] && return 0
+    _target=$TARGET_OPT
+    if [ -z "$_target" ]; then
+        _target=$(ask_line "설치할 곳 — 현재 폴더($REPO_ROOT)면 Enter, 새 경로에 설치하려면 그 경로를 적는다: ")
+    fi
+    [ -n "$_target" ] || { say "설치할 곳: 현재 폴더 $REPO_ROOT"; return 0; }
+    case $_target in "~"|"~/"*) _target=$HOME${_target#\~} ;; esac
+    case $_target in /*) ;; *) _target=$(pwd -P)/$_target ;; esac
+    if [ -d "$_target" ] && [ "$(cd "$_target" && pwd -P)" = "$REPO_ROOT" ]; then
+        say "설치할 곳: 현재 폴더 $REPO_ROOT"
+        return 0
+    fi
+    if [ -e "$_target" ] && [ -n "$(ls -A "$_target" 2>/dev/null)" ]; then
+        die "$_target 가 비어 있지 않다 — 빈 경로나 없는 경로를 준다"
+    fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        plan "이 폴더를 $_target 에 복사하고(git clone) 그곳의 install.sh 로 설치한다"
+        exit 0
+    fi
+    step "새 경로에 설치: $_target"
+    mkdir -p "$(dirname "$_target")"
+    if git -C "$REPO_ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
+        git clone -q "$REPO_ROOT" "$_target" || die "$_target 로 복사하지 못했다"
+        _origin=$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)
+        if [ -n "$_origin" ]; then git -C "$_target" remote set-url origin "$_origin"; fi
+    else
+        cp -R "$REPO_ROOT" "$_target" || die "$_target 로 복사하지 못했다"
+    fi
+    eval "exec \"\$_target/scripts/install.sh\" $ORIG_ARGS --here"
+}
+
 # --------------------------------------------------------------- 주기 ingest 루틴
 # 루틴은 raw/ 에 새 소스가 들어왔을 때만 에이전트를 부른다. 매시간 LLM 을
 # 깨우는 것이 목적이 아니므로, 미처리 목록이 지난번과 같으면 그냥 넘어간다.
@@ -905,7 +953,7 @@ install_data_guides() {
 # --------------------------------------------------------------- update
 # llmwiki update · install.ps1 update 와 같은 Python 구현(llmwiki.py update)을 부른다.
 do_update() {
-    step "갱신 (코드 repo pull → 데이터 repo 맞춤)"
+    step "갱신 (llmwiki update)"
     set -- update
     if [ -n "$DATA" ]; then set -- "$@" --data "$DATA"; fi
     if [ "$ASK" -eq 0 ]; then set -- "$@" --yes; fi
@@ -988,6 +1036,7 @@ case $COMMAND in
         [ -z "${_verify_failed-}" ]
         ;;
     install)
+        choose_location
         report_detection
         require_targets
         # 네트워크가 필요한 일은 전부 여기서 끝낸다 — 아래부터는 설정 쓰기다.
