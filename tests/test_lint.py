@@ -472,6 +472,29 @@ class OpenQuestionTest(WorkspaceCase):
         self.assertEqual(json.loads(self.cli("lint", "--json").stdout)["counts"],
                          {"unresolved_conflicts": 1, "open_questions": 3})
 
+    def test_lint_json_counts_every_warning_kind(self) -> None:
+        source = make_page("raw-note", "# Raw\n\n통합되지 않은 소스.\n", type="source", summary="",
+                           tags=["Pre_V0-1"])
+        other = make_page("other", "# Other\n\n[[raw-note]] 를 본다.\n", type="source", tags=["pre-v0.1"])
+        self.write_pages([self.page, make_page("beta", "# Beta\n\n[[alpha]]\n"), source, other,
+                          make_page("lonely", "# Lonely\n\n아무도 안 본다.\n")])
+        llmwiki.build(self.ws)
+        report = json.loads(self.cli("lint", "--json").stdout)
+        kinds = report["warning_kinds"]
+        self.assertEqual(sum(kinds.values()), len(report["warnings"]))
+        self.assertNotIn("other", kinds, [w for w in report["warnings"]
+                                          if not any(p.search(w) for _k, p in llmwiki.WARNING_KINDS)])
+        self.assertEqual(kinds["unresolved_conflict"], 1)
+        self.assertEqual(kinds["open_question"], 3)
+        self.assertEqual(kinds["orphan"], 1)
+        self.assertEqual(kinds["empty_summary"], 1)
+        self.assertGreaterEqual(kinds["unintegrated_source"], 2)
+        self.assertGreaterEqual(kinds["tag_variant"], 1)
+        self.assertEqual(llmwiki.warning_kinds(["x: compile debt 3 — 이 concept 보다 새 source: a",
+                                                "x: page is 300 KB (> 200 KB) — 나눈다",
+                                                "index/map.json stale — run build", "뭔가 새 경고"]),
+                         {"compile_debt": 1, "page_too_large": 1, "stale_index": 1, "other": 1})
+
     def test_edit_changes_owner_and_due_through_the_markdown(self) -> None:
         self.write_pages([self.page, make_page("beta", "# Beta\n\n[[alpha]]\n")])
         bid = next(b for b in self.page["block_order"] if self.page["blocks"][b]["kind"] == "open_question")

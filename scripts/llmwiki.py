@@ -1856,6 +1856,32 @@ def tag_warnings(pages: list[dict[str, Any]], vocabulary: list[str] | None,
     return warnings
 
 
+# lint 경고의 종류 — `lint --json` 의 warning_kinds 가 종류별로 센다. 처음 맞는 것이 그 종류다.
+WARNING_KINDS = (
+    ("unresolved_conflict", re.compile(r": unresolved conflict$")),
+    ("open_question", re.compile(r": open question \(")),
+    ("empty_summary", re.compile(r": empty summary$")),
+    ("orphan", re.compile(r": orphan \(")),
+    ("summary_dump", re.compile(r": summary starts with a table dump")),
+    ("unintegrated_source", re.compile(r": source links to no concept, entity or synthesis")),
+    ("compile_debt", re.compile(r": compile debt \d+")),
+    ("page_too_large", re.compile(r": page is \d+ KB")),
+    ("missing_supersedes", re.compile(r"라고 하지만 supersedes 링크가 없다$")),
+    ("tag_variant", re.compile(r": tag '.*' 는 '.*' 의 변형이다")),
+    ("tag_off_list", re.compile(r": tag '.*' 가 .* 에 없다")),
+    ("stale_index", re.compile(r"map\.json (?:missing|unreadable|stale)")),
+)
+
+
+def warning_kinds(warnings: Iterable[str]) -> dict[str, int]:
+    """경고 종류별 개수 (0 인 종류는 싣지 않는다, 어느 종류에도 맞지 않으면 other)."""
+    counts: Counter[str] = Counter()
+    for warning in warnings:
+        counts[next((kind for kind, pattern in WARNING_KINDS if pattern.search(warning)), "other")] += 1
+    order = [kind for kind, _ in WARNING_KINDS] + ["other"]
+    return {kind: counts[kind] for kind in order if counts[kind]}
+
+
 def issue_counts(pages: Iterable[dict[str, Any]]) -> dict[str, int]:
     """lint 가 따로 세는 열린 일 — 미판정 상충과 미결 질문은 다른 일이다."""
     counts = {"unresolved_conflicts": 0, "open_questions": 0}
@@ -3091,7 +3117,8 @@ def run(argv: list[str] | None = None) -> int:
         if command == "validate":
             warnings = []
         if getattr(args, "as_json", False):
-            emit({"errors": errors, "warnings": warnings, **({"counts": counts} if counts else {})})
+            extra = {"counts": counts, "warning_kinds": warning_kinds(warnings)} if counts else {}
+            emit({"errors": errors, "warnings": warnings, **extra})
         else:
             for item in errors:
                 print("ERROR", item)
