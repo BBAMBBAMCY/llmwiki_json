@@ -88,9 +88,9 @@ class DemoSetTest(WorkspaceCase):
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         report = json.loads(proc.stdout)
-        self.assertEqual(set(report), {"root", "pages", "max_bytes", "silence", "hint", "questions", "answerable",
-                                       "unrelated", "gold_injected", "top1", "unrelated_bytes_mean",
-                                       "unrelated_silent"})
+        self.assertEqual(set(report), {"root", "pages", "max_bytes", "silence", "hint", "glossary_groups",
+                                       "questions", "answerable", "unrelated", "gold_injected", "top1",
+                                       "unrelated_bytes_mean", "unrelated_silent"})
         self.assertGreaterEqual(report["gold_injected"], 0.8)
         proc = subprocess.run([sys.executable, str(EVAL_SCRIPT), str(DEMO_QUESTIONS), "--root", str(REPO)],
                               capture_output=True, text=True)

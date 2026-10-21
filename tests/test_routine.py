@@ -429,6 +429,12 @@ class GitDisciplineTest(RoutineCase):
         ok, detail = routine.commit_and_push(self.root_path, "private", "main", push=False)
         self.assertTrue(ok, detail)
         self.assertEqual(routine.changed_paths(self.root_path), [])
+        glossary = self.root_path / "tools" / "config" / "glossary.json"   # 대역 사전도 같은 길이다
+        glossary.write_text('{"groups": [["release", "릴리스"]]}', encoding="utf-8")
+        self.assertIn("tools/config/glossary.json", routine.changed_paths(self.root_path))
+        ok, detail = routine.commit_and_push(self.root_path, "private", "main", push=False)
+        self.assertTrue(ok, detail)
+        self.assertEqual(routine.changed_paths(self.root_path), [])
 
     def test_leftover_from_a_broken_run_is_finished_next_time(self) -> None:
         # build 가 깨지거나 에이전트가 죽어 커밋되지 못한 변경이 남으면, 그

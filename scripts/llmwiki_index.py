@@ -260,6 +260,73 @@ def tokenize(text: str, *, query: bool = False) -> list[str]:
 STOP_2G: frozenset[str] = frozenset(t for w in STOP_WORDS for t in tokenize(w))
 
 
+# ------------------------------------------------------------------ 대역 사전
+# 질문은 한국어로 묻는데 정본은 영문 용어를 그대로 쓰는 일이 많다(`변수별 통계` ↔ `Feature 통계`). 위키마다
+# `tools/config/glossary.json` 에 같은 것을 가리키는 표기를 묶어 두면, 질문에 한 표기가 나올 때 같은 묶음의
+# 다른 표기를 질문 토큰에 SYN_W 가중으로 더한다. 조회 때 읽으므로 사전을 고치면 build 없이 바로 쓰이고,
+# 색인 바이트는 사전과 무관하다. 파일이 없거나 읽을 수 없으면 넓히지 않는다.
+GLOSSARY_CONFIG = "tools/config/glossary.json"
+SYN_W = 0.5
+
+
+@dataclass(frozen=True)
+class Glossary:
+    """묶음마다 표기별 질문 토큰 집합. `expand` 가 질문 토큰에 더할 토큰을 낸다."""
+    groups: tuple[tuple[frozenset[str], ...], ...]
+
+    def expand(self, terms: set[str]) -> dict[str, frozenset[str]]:
+        """질문 토큰 → 더할 토큰과 그 토큰을 부른 표기(질문에 나온 표기의 토큰들).
+
+        표기의 토큰이 모두 질문에 있으면 그 표기가 나온 것이다. 한 토큰을 여러 표기가 부르면 합친다."""
+        extra: dict[str, frozenset[str]] = {}
+        for group in self.groups:
+            found = frozenset().union(*(member for member in group if member <= terms))
+            if found:
+                for member in group:
+                    for term in member - terms:
+                        extra[term] = extra.get(term, frozenset()) | found
+        return extra
+
+
+def parse_glossary(groups: Any) -> Glossary | None:
+    """`[[표기, …], …]` → Glossary. 토큰이 없는 표기(한 글자 한글 등)는 빼고, 표기가 둘 이상 남은 묶음만 둔다."""
+    out: list[tuple[frozenset[str], ...]] = []
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, list):
+            continue
+        members: list[frozenset[str]] = []
+        for word in group:
+            toks = frozenset(tokenize(word, query=True)) if isinstance(word, str) else frozenset()
+            if toks and toks not in members:
+                members.append(toks)
+        if len(members) >= 2:
+            out.append(tuple(members))
+    return Glossary(tuple(out)) if out else None
+
+
+_GLOSSARIES: dict[str, tuple[tuple[int, int], Glossary | None]] = {}
+
+
+def load_glossary(root: Path) -> Glossary | None:
+    """`<root>/tools/config/glossary.json` 의 `groups`. 파일이 그대로면 프로세스 안에서 다시 읽지 않는다."""
+    path = Path(root) / GLOSSARY_CONFIG
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    cached = _GLOSSARIES.get(str(path))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    glossary = parse_glossary(value.get("groups") if isinstance(value, dict) else None)
+    _GLOSSARIES[str(path)] = (stamp, glossary)
+    return glossary
+
+
 def heading_paths(page: dict[str, Any]) -> dict[str, str]:
     """block id → 그 block 을 감싸는 heading 경로 (H6). heading block 자신은 ''."""
     blocks = page.get("blocks") or {}
@@ -1147,11 +1214,11 @@ def update(path: Path, docs_by_id: dict[str, tuple[str, dict[str, Any]]], delta:
 
 
 def build_memory(docs: Iterable[tuple[str, dict[str, Any]]], *, revision: str = "",
-                 heading_paths: bool = False) -> "Index":
+                 heading_paths: bool = False, glossary: Glossary | None = None) -> "Index":
     """디스크에 쓰지 않는 색인 (llmwiki.py query 와 훅의 메모리 폴백이 정본에서 바로 만든다)."""
     db = _new_db(":memory:", revision=revision, heading_paths=heading_paths)
     fill(db, docs)
-    return Index(db, str(revision))
+    return Index(db, str(revision), glossary=glossary)
 
 
 def logical_digest(db: sqlite3.Connection) -> str:
@@ -1203,9 +1270,11 @@ class SearchResult:
 class Index:
     """열린 색인. 훅은 `open_ro` 로, build 는 `build_memory` 로 얻는다."""
 
-    def __init__(self, db: sqlite3.Connection, revision: str = "", path: Path | None = None):
+    def __init__(self, db: sqlite3.Connection, revision: str = "", path: Path | None = None,
+                 glossary: Glossary | None = None):
         self.db = db
         self.path = path
+        self.glossary = glossary
         meta = dict(db.execute("SELECT k, v FROM meta"))
         self.schema = str(meta.get("schema") or "")
         self.revision = str(meta.get("revision") or revision or "")
@@ -1244,10 +1313,31 @@ class Index:
                 out[t] = math.log(1.0 + (n - df.get(t, 0) + 0.5) / (df.get(t, 0) + 0.5))
         return out
 
+    def query_terms(self, query: str) -> dict[str, float]:
+        """질문 토큰 → 가중. 질문에 쓴 토큰은 1.0, 대역 사전으로 넓힌 토큰은 SYN_W 이하다.
+
+        넓힌 토큰의 idf 는 그것을 부른 질문 표기의 idf 를 넘지 않게 깎는다(동의어를 한 낱말로 보는 것).
+        idf³ 가중이라 깎지 않으면 드문 대역어(`디비` df 3) 가 질문에 실제로 쓴 흔한 낱말(`DB`) 보다 훨씬
+        큰 몫을 받아 그 대역어를 우연히 가진 page 를 올린다.
+        """
+        weights = dict.fromkeys(tokenize(query, query=True), 1.0)
+        if self.glossary is None or not weights:
+            return weights
+        extra = self.glossary.expand(set(weights))
+        if extra:
+            idf = self.term_idf(sorted(set(extra) | set().union(*extra.values())))
+            for term, source in extra.items():
+                own, cap = idf.get(term, 0.0), max(idf.get(t, 0.0) for t in source)
+                if own > 0.0:
+                    weights[term] = SYN_W * min(1.0, cap / own) ** IDF_POW
+        return weights
+
     def _lex(self, query: str) -> tuple[dict[int, float], dict[int, list[tuple[float, int]]]]:
-        terms = sorted(set(tokenize(query, query=True)))
+        weights = self.query_terms(query)
+        terms = sorted(weights)
+        asked = [t for t in terms if weights[t] >= 1.0]
         n = self.nblocks
-        sig = {"n_terms": float(len(terms)), "posted_terms": 0.0, "coverage": 0.0, "idf_coverage": 0.0,
+        sig = {"n_terms": float(len(asked)), "posted_terms": 0.0, "coverage": 0.0, "idf_coverage": 0.0,
                "raw_top": 0.0, "content_raw_top": 0.0, "top_block_impact": 0.0, "top1_best_block": 0.0,
                "top1_n_blocks": 0.0}
         self.last_signals = sig
@@ -1261,18 +1351,23 @@ class Index:
         rows.sort(key=lambda r: (r[1], r[0]))
         df_of = {r[0]: r[1] for r in rows}
         idf_all = {t: math.log(1.0 + (n - df_of.get(t, 0) + 0.5) / (df_of.get(t, 0) + 0.5)) for t in terms}
-        sig["posted_terms"] = float(len(rows))
-        sig["coverage"] = len(rows) / len(terms)
-        sig["idf_coverage"] = sum(idf_all[t] for t in df_of) / (sum(idf_all.values()) or 1.0)
+        # coverage 는 질문에 쓴 토큰으로만 센다 — 위키가 질문의 낱말을 얼마나 아는가이다
+        posted = [t for t in asked if t in df_of]
+        sig["posted_terms"] = float(len(posted))
+        sig["coverage"] = len(posted) / len(asked)
+        sig["idf_coverage"] = sum(idf_all[t] for t in posted) / (sum(idf_all[t] for t in asked) or 1.0)
         cap = MAX_DF_FRAC * n
         kept = [r for r in rows if r[1] <= cap] or rows[:1]
+        # 질문 토큰과 넓힌 토큰은 상한을 따로 센다 — 드문 대역어가 질문 낱말의 자리를 빼앗지 않게
+        kept = ([r for r in kept if weights[r[0]] >= 1.0][:MAX_QUERY_TERMS]
+                + [r for r in kept if weights[r[0]] < 1.0][:MAX_QUERY_TERMS])
         blk: dict[int, float] = {}
         blk_c: dict[int, float] = {}
         k1p = BM25_K1 + 1.0
         kc = BM25_K1 * (1.0 - BM25_B)
         kl = BM25_K1 * BM25_B / self.avg_len
         mult = MULT
-        for term, _df, ids_b, tfs_b, lens_b, flags_b in kept[:MAX_QUERY_TERMS]:
+        for term, _df, ids_b, tfs_b, lens_b, flags_b in kept:
             ids, tfs, lens, flags = _decode((ids_b, tfs_b, lens_b, flags_b))
             idf = idf_all[term]
             # live impact: build 때 굽지 않고 여기서 계산한다 — 증분 갱신 뒤에도 cold build 와 같은 값
@@ -1280,7 +1375,7 @@ class Index:
                       for brid, tf, ln, fl in zip(ids, tfs, lens, flags)]
             if len(scored) > MAX_POST:
                 scored = heapq.nlargest(MAX_POST, scored, key=lambda x: (x[0], -x[1]))
-            qw = idf ** (IDF_POW - 1.0)
+            qw = idf ** (IDF_POW - 1.0) * weights[term]
             content = term not in STOP_2G
             for imp, brid in scored:
                 v = imp * qw
@@ -1547,7 +1642,7 @@ class Index:
         return dict(zip(cols, row)) if row else None
 
 
-def open_ro(path: Path, *, busy_timeout_ms: int = 2000) -> Index:
+def open_ro(path: Path, *, busy_timeout_ms: int = 2000, glossary: Glossary | None = None) -> Index:
     """읽기 전용으로 연다. 훅 전용 — 파일이 없거나 표가 다르면 예외를 낸다(호출자가 fail-open).
 
     `immutable=1`: publish 는 언제나 `os.replace` 로 파일을 통째로 바꾸고 제자리 수정을 하지 않으므로
@@ -1560,7 +1655,7 @@ def open_ro(path: Path, *, busy_timeout_ms: int = 2000) -> Index:
     db = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True, check_same_thread=False)
     try:
         db.execute(f"PRAGMA busy_timeout={int(busy_timeout_ms)}")
-        idx = Index(db, path=path)
+        idx = Index(db, path=path, glossary=glossary)
     except sqlite3.Error:
         db.close()
         raise
@@ -1792,11 +1887,12 @@ def split_rows(raw: str) -> tuple[list[str], bool]:
 
 
 def query_weights(idx: Index, query: str) -> dict[str, float]:
-    """질문 토큰 → idf². 기능어 2-gram 은 뺀다(전부 기능어면 유지)."""
-    terms = sorted(set(tokenize(query, query=True)))
+    """질문 토큰 → idf² (대역 사전으로 넓힌 토큰은 × SYN_W). 기능어 2-gram 은 뺀다(전부 기능어면 유지)."""
+    weights = idx.query_terms(query)
+    terms = sorted(weights)
     kept = [t for t in terms if t not in STOP_2G] or terms
     idf = idx.term_idf(kept)
-    return {t: idf.get(t, 0.0) ** 2 for t in kept}
+    return {t: weights[t] * idf.get(t, 0.0) ** 2 for t in kept}
 
 
 def select_rows(raw: str, wt: dict[str, float], limit: int = ROW_CHARS) -> tuple[str, bool]:

@@ -2567,9 +2567,10 @@ def open_search_index(ws: Workspace) -> "search_index.Index":
     `query` therefore never answers from a stale index: freshness means the index's
     `meta.revision` matches `index/revision.json` and no canonical file is newer than it.
     """
+    glossary = search_index.load_glossary(ws.root)
     if not ws.fixtures and ws.search_db.is_file():
         try:
-            idx = search_index.open_ro(ws.search_db)
+            idx = search_index.open_ro(ws.search_db, glossary=glossary)
             fresh = (idx.revision and idx.revision == search_index.read_revision(ws.root)
                      and search_index.newest_mtime(ws.pages_dir) <= ws.search_db.stat().st_mtime)
             if fresh:
@@ -2577,7 +2578,7 @@ def open_search_index(ws: Workspace) -> "search_index.Index":
             idx.close()
         except (OSError, ValueError, sqlite3.Error):
             pass
-    return search_index.build_memory(ws.load_documents())
+    return search_index.build_memory(ws.load_documents(), glossary=glossary)
 
 
 def query(ws: Workspace, text: str, limit: int = 10) -> list[dict[str, Any]]:

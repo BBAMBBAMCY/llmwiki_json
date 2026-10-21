@@ -781,3 +781,63 @@ class GraphTest(unittest.TestCase):
         weak = self.related(make_page("weak", "# Weak\n\n배포 승인 절차 메모.\n"), "o1", "o2", "o3")
         others = [make_page(f"o{i}", f"# O{i}\n\n다른 메모 {i}.\n") for i in (1, 2, 3)]
         self.assertEqual(self.ranked([top, weak, *others])[:2], ["page:top", "page:weak"])
+
+
+class GlossaryTest(IndexCase):
+    """대역 사전: 질문에 나온 한 표기가 같은 묶음의 다른 표기를 SYN_W 가중으로 불러온다."""
+
+    GROUPS = [["golden set", "골든셋"], ["regression", "회귀"]]
+    QUERY = "골든셋은 회귀 검증에 쓰나요?"
+
+    def write_glossary(self, value: object) -> Path:
+        path = self.root_path / IDX.GLOSSARY_CONFIG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False), encoding="utf-8")
+        return path
+
+    def memory(self, glossary: object = None) -> "IDX.Index":
+        idx = IDX.build_memory([("wiki/x.json", p) for p in CORPUS], glossary=glossary)
+        self.addCleanup(idx.close)
+        return idx
+
+    def test_members_without_tokens_and_lone_members_are_dropped(self) -> None:
+        g = IDX.parse_glossary([["Feature", "변수", "한"], ["단"], "x", [1, 2], ["실행 계획", "EXPLAIN"]])
+        self.assertEqual(g.groups, ((frozenset({"feature"}), frozenset({"변수"})),
+                                    (frozenset({"실행", "계획"}), frozenset({"explain"}))))
+        self.assertIsNone(IDX.parse_glossary([["한", "단"]]))
+        self.assertIsNone(IDX.parse_glossary({"groups": []}))
+
+    def test_a_member_in_the_question_adds_its_partners_at_a_lower_weight(self) -> None:
+        idx = self.memory(IDX.parse_glossary(self.GROUPS))
+        self.assertEqual(idx.query_terms("골든셋은 회귀 검증"),
+                         {"골든": 1.0, "든셋": 1.0, "회귀": 1.0, "검증": 1.0,
+                          "golden": IDX.SYN_W, "set": IDX.SYN_W, "regression": IDX.SYN_W})
+        self.assertEqual(idx.query_terms("검증 일정"), {"검증": 1.0, "일정": 1.0})    # 나오지 않은 묶음은 그대로
+
+    def test_a_korean_question_finds_the_english_page(self) -> None:
+        self.assertNotIn("page:golden-set", [h.page_id for h in self.memory().search(self.QUERY).hits])
+        self.write_glossary({"groups": self.GROUPS})
+        _text, result, pages = self.context(self.QUERY)
+        self.assertEqual((result.mode, pages[0]["id"]), ("memory", "page:golden-set"))
+        self.build()
+        _text, result, pages = self.context(self.QUERY)
+        self.assertEqual((result.mode, pages[0]["id"]), ("index", "page:golden-set"))
+        self.assertEqual(llmwiki.query(self.ws, self.QUERY)[0]["id"], "page:golden-set")
+
+    def test_coverage_counts_only_the_words_of_the_question(self) -> None:
+        plain = self.memory().search(self.QUERY).signals
+        wide = self.memory(IDX.parse_glossary(self.GROUPS)).search(self.QUERY).signals
+        for key in ("n_terms", "posted_terms", "coverage", "idf_coverage"):
+            self.assertEqual(plain[key], wide[key], key)
+
+    def test_the_wiki_config_is_read_and_a_broken_one_is_ignored(self) -> None:
+        self.assertIsNone(IDX.load_glossary(self.root_path))
+        path = self.write_glossary({"groups": self.GROUPS})
+        self.assertEqual(len(IDX.load_glossary(self.root_path).groups), 2)
+        self.assertEqual(json.loads(self.context_cli("doctor").stdout)["glossary"]["groups"], 2)
+        path.write_text("{깨진 json", encoding="utf-8")
+        self.assertIsNone(IDX.load_glossary(self.root_path))
+        text, _result, _pages = self.context(self.QUERY)         # 넓히지 않을 뿐 훅은 돈다
+        self.assertNotIn("golden-set", text)
+        doctor = json.loads(self.context_cli("doctor").stdout)["glossary"]   # 읽지 못한 사전은 doctor 가 드러낸다
+        self.assertEqual((doctor["present"], doctor["groups"]), (True, 0))

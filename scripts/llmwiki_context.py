@@ -479,7 +479,7 @@ def open_index(root: Path) -> tuple[IDX.Index | None, str]:
     if not path.is_file():
         return None, "no-index"
     try:
-        idx = IDX.open_ro(path)
+        idx = IDX.open_ro(path, glossary=IDX.load_glossary(root))
     except Exception as exc:  # noqa: BLE001 - sqlite 오류·lock·schema 불일치 전부 스캔으로
         return None, f"open-error:{type(exc).__name__}"
     try:
@@ -538,7 +538,7 @@ def open_memory_index(root: Path) -> tuple[IDX.Index | None, str]:
         docs = IDX.load_docs(root / "wiki", root)
         if not docs:
             return None, "memory-empty-corpus"
-        return IDX.build_memory(docs, revision=IDX.read_revision(root)), ""
+        return IDX.build_memory(docs, revision=IDX.read_revision(root), glossary=IDX.load_glossary(root)), ""
     except Exception as exc:  # noqa: BLE001 - 정본 손상 등 무엇이든 스캔으로
         return None, f"memory-error:{type(exc).__name__}"
 
@@ -2072,6 +2072,10 @@ def run(argv: list[str] | None = None) -> int:
             idx.close()
         else:
             search_info["fallback"] = why
+        # 파일이 있는데 묶음이 0 이면 읽지 못한 것이다 — 그때 질문은 넓혀지지 않는다
+        glossary = IDX.load_glossary(root)
+        glossary_info = {"file": str(root / IDX.GLOSSARY_CONFIG), "present": (root / IDX.GLOSSARY_CONFIG).is_file(),
+                         "groups": len(glossary.groups) if glossary else 0}
         print(json.dumps({
             "root": str(root),
             "exists": root.is_dir(),
@@ -2081,6 +2085,7 @@ def run(argv: list[str] | None = None) -> int:
             "index_enabled": env_flag(ENV_INDEX, True),
             "silence_threshold": threshold(root, ENV_SILENCE, "silence", SILENCE_T_DEFAULT),
             "hint_threshold": threshold(root, ENV_HINT, "hint", HINT_T_DEFAULT),
+            "glossary": glossary_info,
             "max_bytes": env_int(ENV_MAX_BYTES, MAX_BYTES),
             "max_tokens": env_int(ENV_MAX_TOKENS, MAX_TOKENS),
             "disabled": env_flag(ENV_DISABLE, False),

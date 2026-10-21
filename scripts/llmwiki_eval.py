@@ -12,11 +12,13 @@
 색인은 정본(`wiki/**/*.json`)에서 메모리로 한 번 굽고 모든 질문에 다시 쓴다. 검색·투영·렌더는 훅의
 메모리 경로(`llmwiki_context.build_indexed`)와 같다. 고정(always) page 는 싣지 않는다 — 검색을 재는
 것이기 때문이다. 정본도 색인 파일도 쓰지 않는다. 무주입 문턱은 훅처럼 기본 꺼짐이고, `--silence`·`--hint`
-로 켜서 같은 질문 세트로 득실(gold 주입률 대 무관 질문 주입)을 잴 수 있다.
+로 켜서 같은 질문 세트로 득실(gold 주입률 대 무관 질문 주입)을 잴 수 있다. 대역 사전
+(`tools/config/glossary.json`)이 있으면 훅처럼 질문을 넓힌다 — `--no-glossary` 로 끄고 사전의 득실을 잰다.
 
     python3 scripts/llmwiki_eval.py tools/eval/demo-questions.json
     python3 scripts/llmwiki_eval.py my-questions.json --root ~/llmwiki --json --details
     python3 scripts/llmwiki_eval.py my-questions.json --root ~/llmwiki --silence 770   # 문턱을 켰을 때
+    python3 scripts/llmwiki_eval.py my-questions.json --root ~/llmwiki --no-glossary   # 사전 없이
 """
 from __future__ import annotations
 
@@ -77,12 +79,14 @@ def rate(flags: Iterable[bool]) -> float | None:
 
 
 def evaluate(root: Path, questions: list[dict[str, Any]], *, max_bytes: int = C.MAX_BYTES,
-             max_tokens: int = C.MAX_TOKENS, silence_t: float = 0.0, hint_t: float = 0.0) -> dict[str, Any]:
+             max_tokens: int = C.MAX_TOKENS, silence_t: float = 0.0, hint_t: float = 0.0,
+             glossary: bool = True) -> dict[str, Any]:
     root = Path(root).resolve()
     docs = IDX.load_docs(root / "wiki", root)
     if not docs:
         raise SystemExit(f"{root}/wiki 에 page 가 없다")
-    idx = IDX.build_memory(docs)
+    words = IDX.load_glossary(root) if glossary else None
+    idx = IDX.build_memory(docs, glossary=words)
     rows: list[dict[str, Any]] = []
     try:
         for item in questions:
@@ -102,6 +106,7 @@ def evaluate(root: Path, questions: list[dict[str, Any]], *, max_bytes: int = C.
         row["top1"] = row["top"] in row["gold"]
     return {
         "root": str(root), "pages": len(docs), "max_bytes": max_bytes, "silence": silence_t, "hint": hint_t,
+        "glossary_groups": len(words.groups) if words else 0,
         "questions": len(rows), "answerable": len(answerable), "unrelated": len(unrelated),
         "gold_injected": rate(row["gold_injected"] for row in answerable),
         "top1": rate(row["top1"] for row in answerable),
@@ -121,6 +126,8 @@ def print_report(report: dict[str, Any]) -> None:
     print(f"gold 주입률          {report['gold_injected']} ({hits}/{answerable})")
     print(f"1위 비율             {report['top1']} ({tops}/{answerable})")
     print(f"무관 질문 평균 주입  {report['unrelated_bytes_mean']} B (무주입 {report['unrelated_silent']})")
+    if report["glossary_groups"]:
+        print(f"대역 사전            {report['glossary_groups']} 묶음 ({IDX.GLOSSARY_CONFIG})")
     if report["silence"] or report["hint"]:
         print(f"문턱                 silence {report['silence']} · hint {report['hint']}")
 
@@ -133,12 +140,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-tokens", type=int, default=C.MAX_TOKENS)
     parser.add_argument("--silence", type=float, default=0.0, help="무주입 문턱 raw_top×coverage (기본 0 = 끔)")
     parser.add_argument("--hint", type=float, default=0.0, help="주소만 문턱 (기본 0 = 끔)")
+    parser.add_argument("--no-glossary", action="store_false", dest="glossary",
+                        help=f"{IDX.GLOSSARY_CONFIG} 로 질문을 넓히지 않는다 (사전의 득실을 잴 때)")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument("--details", action="store_true", help="--json 에 질문마다의 결과를 싣는다")
     args = parser.parse_args(argv)
     root = Path(args.root or os.environ.get(C.ENV_ROOT) or DEFAULT_ROOT)
     report = evaluate(root, load_questions(Path(args.questions)), max_bytes=args.max_bytes,
-                      max_tokens=args.max_tokens, silence_t=args.silence, hint_t=args.hint)
+                      max_tokens=args.max_tokens, silence_t=args.silence, hint_t=args.hint,
+                      glossary=args.glossary)
     if args.as_json:
         if not args.details:
             report = {key: value for key, value in report.items() if key != "rows"}

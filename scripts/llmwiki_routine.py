@@ -88,9 +88,9 @@ INGEST_PROMPT = (
 # groups.json 은 모르는 프로젝트를 만났을 때 ingest 가 직접 등록하는 파일이라,
 # 빼 두면 커밋되지 않은 채 남아 다음 차례가 dirty tree 에서 멈춘다.
 COMMIT_PATHS = ("wiki", "index", "viewer/public/data", "tools/config/groups.json")
-# tag 허용 목록도 같다 — 새 tag 가 필요하면 에이전트가 목록에 더한다. 목록은 선택이라 있을 때만 넣는다
-# (없는 경로를 git add 에 넘기면 add 전체가 실패한다).
-OPTIONAL_COMMIT_PATHS = ("tools/config/tags.json",)
+# tag 허용 목록과 대역 사전도 같다 — 새 tag·새 용어가 나오면 에이전트가 거기에 더한다. 둘 다 선택이라
+# 있을 때만 넣는다(없는 경로를 git add 에 넘기면 add 전체가 실패한다).
+OPTIONAL_COMMIT_PATHS = ("tools/config/tags.json", "tools/config/glossary.json")
 
 # raw/ 에 있어도 소스가 아닌 것들. `raw/.llmwikiignore` 로 더 넣을 수 있다.
 DEFAULT_IGNORE = ("README*", "readme*", "*.gitkeep", "*.lock", "*.tmp", "*.part",
