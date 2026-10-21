@@ -141,11 +141,11 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 
 | 명령 | 하는 일 |
 |---|---|
-| `install` (기본) | hook · 전역 지침 · MCP 를 설치한다. 몇 번을 돌려도 결과가 같다 |
-| `verify` | 설치 상태를 점검한다. 아무것도 고치지 않는다. 실패 시 exit 1 |
-| `uninstall` | 이 스크립트가 넣은 것만 되돌린다 |
+| `install` (기본) | hook · 전역 지침 · MCP · `llmwiki` 명령(shim)을 설치하고, `--data` 가 데이터 repo 면 그 CLAUDE.md·AGENTS.md·skills 를 만든다. 몇 번을 돌려도 결과가 같다 |
+| `verify` | 설치 상태를 점검한다 — 코드 경로, 데이터 경로, lock 과 코드의 schema·code 판, 생성 지침이 최신인지, shim 이 이 코드를 가리키는지, hook·지침·Codex 신뢰, end-to-end 주입. 아무것도 고치지 않는다. 실패 시 exit 1 |
+| `uninstall` | 이 스크립트가 넣은 것만 되돌린다 (우리가 놓은 shim 포함) |
 | `doctor` | 감지 결과와 해석된 경로만 출력한다 |
-| `update` | upstream(`origin`)에서 코드 갱신만 ff-only 로 받아 온다. 개인 위키는 건드리지 않는다 |
+| `update` | `llmwiki update` 와 같다 — 코드 repo 를 ff-only 로 받고 데이터 repo 를 그 코드에 맞춘다(migrate · 지침 · build/validate/lint · lock · 커밋). `-y` 면 migrate 확인을 생략, `--dry-run` 은 아무것도 쓰지 않는다 |
 
 | 옵션 | 뜻 |
 |---|---|
@@ -159,6 +159,7 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 | `--no-guides` | `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md` 를 건드리지 않는다 |
 | `--python P` | 쓸 인터프리터 절대경로. 자동 선택보다 우선하고, 공백이 있어도 된다 |
 | `--mcp-name N` | MCP 서버 이름 (기본 `llmwiki`) |
+| `--data DIR` | 데이터 repo (`llmwiki init`/`adopt` 로 만든 것). hook 명령과 MCP 등록에 `LLMWIKI_ROOT=DIR` 을, `llmwiki` shim 에 기본 데이터로 기록한다. 주지 않은 verify·update 는 shim 이 기록한 것을 본다. 데이터 root 를 붙이거나 바꾸면 hook 명령이 바뀌므로 Codex 는 다시 신뢰를 묻는다 |
 | `--force` | 미지원 OS 나 미감지 클라이언트에서도 강행한다 |
 | `-q`, `--quiet` | 진행 로그를 줄인다 (클라이언트 실행 파일도 부르지 않는다) |
 | `--ingest-routine C` | 주기 루틴을 걸 에이전트 — `claude` · `codex` · `none`. 주지 않으면 설치 중에 물어본다 |

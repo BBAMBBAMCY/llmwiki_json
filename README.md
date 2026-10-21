@@ -16,11 +16,14 @@ wiki/syntheses/        종합·비교·분석 JSON 페이지
 wiki/projects/         프로젝트 허브 JSON 페이지
 wiki/log.jsonl         append-only 작업 로그
 raw/                   불변 원본 소스 큐 + 기존 live source symlink
-index/                 재생성 가능한 catalog/map/graph/routes/stats/revision + search.sqlite(검색 색인)
+index/                 재생성 가능한 catalog/map/graph/routes/stats/revision + search.sqlite(검색 색인) — 데이터 repo 에서는 .llmwiki/index/
 tools/schema/          JSON Schema
 tools/config/          프로젝트 그룹·색상 설정, tag 허용 목록(tags.json, 선택), 검색 대역 사전(glossary.json, 선택)
 tools/eval/            데모 위키용 랭킹 평가 질문 세트
-scripts/llmwiki.py     ingest/build/query/get/render/outline/lint/log CLI
+scripts/llmwiki.py     ingest/edit/repair/build/query/get/render/outline/lint/log/migrate/init/adopt/update CLI
+scripts/llmwiki_paths.py  데이터 root 해석과 배치(단일 repo · 데이터 repo), 스키마 판·lock
+scripts/llmwiki_migrate.py  스키마 판 변환 레지스트리
+scripts/llmwiki_repo.py  데이터 repo 관리 — lock, 생성 지침, skills, init/adopt/update, llmwiki shim
 scripts/llmwiki_index.py  검색 색인(`index/search.sqlite`) build·검색·부분 그래프 렌더 (표준 라이브러리만)
 scripts/llmwiki_context.py  Codex·Claude 자동 컨텍스트 주입 hook/MCP CLI
 scripts/llmwiki_routine.py  주기 ingest 루틴 (스케줄러 등록·git 연동)
@@ -52,10 +55,12 @@ bun run dev
 
 viewer가 CLI를 부를 때 쓰는 Python은 `LLMWIKI_PYTHON` → `python3` → `python` → `py` 순으로 찾습니다. `python3`라는 이름이 없는 기계(Windows, uv로 받은 Python만 있는 기계)에서는 `LLMWIKI_PYTHON`에 실행 파일 절대경로를 주거나 `scripts/install.sh`(Windows는 `scripts\install.ps1`)로 마련하십시오.
 
-Docker로 정적 빌드를 실행하려면 저장소 루트에서 다음 명령을 사용합니다. 빌드 단계에서 정본 `wiki/**/*.json`으로 파생 데이터를 다시 만든 뒤 Nginx가 `http://localhost:4173`에서 제공합니다.
+Docker로 정적 빌드를 실행하려면 저장소 루트에서 다음 명령을 사용합니다. 이미지에는 화면(SPA)만 굽고, 감시자 컨테이너가 정본 `wiki/**/*.json`으로 파생 데이터를 만들어 Nginx가 `http://localhost:4173`에서 제공합니다.
 
 ```bash
 docker compose -f viewer/compose.yml up -d --build
+# 데이터 repo 를 따로 둔 경우 (아래 "두 repo 운영")
+LLMWIKI_DATA=~/my-wiki LLMWIKI_VIEWER_DATA=~/my-wiki/.llmwiki/viewer-data docker compose -f viewer/compose.yml up -d --build
 ```
 
 두 컨테이너(뷰어와 정본 감시자)에는 `restart: unless-stopped`가 걸려 있어, Docker 엔진이 떠 있는 한 재부팅 뒤에도 스스로 다시 뜹니다. 로그인할 때 Docker 엔진까지 자동으로 올리고 싶으면 OS의 시작 항목에 맡깁니다 — macOS는 Docker Desktop의 "로그인 시 시작" 설정이나 사용자 LaunchAgent, Linux는 `systemctl --user enable docker`(rootless) 또는 시스템 서비스, Windows는 Docker Desktop 설정입니다. 엔진이 뜬 뒤 컨테이너는 위 정책이 다시 올립니다.
@@ -81,9 +86,57 @@ python3 scripts/llmwiki.py repair --dry-run                             # 이미
 
 저장소 밖의 초안은 경로를 남기지 않습니다(`raw_ref`가 비고 history에는 파일 이름만 남습니다) — 원본이 있으면 frontmatter `raw:`에 적습니다.
 
+## 두 repo 운영
+
+코드와 데이터를 다른 저장소에 둘 수 있습니다. **코드 repo**(이 저장소의 clone: `scripts/ viewer/ tools/schema/ tools/parity/ tests/ docs/ .skills/ INIT.md VERSION`)는 upstream에서 받기만 하고, **데이터 repo**에는 자기 위키만 둡니다.
+
+```text
+<data>/  wiki/ raw/ config/ LOCAL.md llmwiki.lock CLAUDE.md AGENTS.md
+         .llmwiki/   파생물(index/, viewer-data/)과 작업 자리 — git 에서 빠진다
+```
+
+- `llmwiki.lock`이 있는 디렉터리가 데이터 repo입니다. 그 안의 어디서든 명령이 위로 올라가며 lock을 찾아 그 데이터를 봅니다. 데이터 root의 우선순위는 `--root` → `LLMWIKI_ROOT` → 현재 디렉터리에서 위로 찾은 `llmwiki.lock` → `llmwiki` shim에 기록한 기본 데이터(`LLMWIKI_DEFAULT_ROOT`) → 코드 repo 자신(단일 repo 모드)입니다. 모든 진입점(CLI·hook·MCP·루틴·평가·viewer)이 `scripts/llmwiki_paths.py`의 같은 함수를 씁니다.
+- 설정은 `<data>/config/`(groups·context·tags·glossary)에서 읽고, 없으면 코드의 `tools/config/`를 기본값으로 씁니다 — tag 허용 목록과 대역 사전은 위키마다 다른 내용이라 기본값을 빌려 쓰지 않습니다.
+- `CLAUDE.md`·`AGENTS.md`는 생성 파일입니다(코드의 `INIT.md` + 데이터의 `LOCAL.md`). 규칙을 바꾸려면 `LOCAL.md`를 고칩니다. `.claude/skills`·`.codex/skills`는 코드의 `.skills`를 가리킵니다(symlink를 못 만드는 Windows는 복사하고 update 때 다시 맞춥니다).
+- `llmwiki.lock`은 이 데이터를 어느 코드로 맞췄는지(`schema_version`·`code_version`·`code_commit`·`code_path`·`updated`) 적습니다. 정본의 스키마 판이 코드와 다르면 `ingest`·`edit`·`repair`는 거부하고(읽기와 hook 주입은 계속 돕니다) `llmwiki migrate`로 옮기게 합니다.
+
+### 신규 시작
+
+```bash
+git clone https://github.com/BrilliantTiger/llmwiki_json ~/llmwiki-code
+python3 ~/llmwiki-code/scripts/llmwiki.py init ~/my-wiki     # 빈 데이터 repo + 첫 커밋
+~/llmwiki-code/scripts/install.sh --data ~/my-wiki           # hook·MCP·llmwiki 명령·지침 (Windows: install.ps1 -Data)
+cd ~/my-wiki && llmwiki ingest raw/첫-소스.md --type source --project 내-프로젝트
+```
+
+### 기존 단일 repo를 전환
+
+옛 clone(코드와 위키가 한 저장소, 파생물까지 커밋됐을 수 있다)을 데이터 repo로 바꿉니다. 코드는 따로 clone한 최신 코드 repo의 것을 씁니다.
+
+```bash
+~/llmwiki-code/scripts/install.sh --data ~/old-wiki
+llmwiki adopt ~/old-wiki --dry-run    # 지울 코드·옮길 설정·추적에서 뺄 파생물·LOCAL.md 로 옮길 줄을 본다
+llmwiki adopt ~/old-wiki --apply      # 바꾸고 build·validate·lint 결과를 보고, 한 커밋으로 남긴다
+llmwiki repair --dry-run              # 어긋난 block 이 남았는지
+```
+
+`adopt`는 `wiki/`·`raw/`를 건드리지 않습니다(전후 `wiki/**/*.json` sha256 목록이 다르면 멈춘다). INIT.md의 로컬 규칙은 코드 repo의 INIT.md 이력 중 가장 가까운 판과 비교해 `LOCAL.md`로 옮기고, upstream 줄을 고쳐 쓴 자리는 "검토 필요" 표지와 함께 넣습니다. 정본이 옛 스키마 판이면 lock에 그 판을 적어 두고 다음 `llmwiki update`(또는 `llmwiki migrate --apply`)가 옮깁니다.
+
+### 갱신
+
+```bash
+llmwiki update            # = scripts/install.sh update = scripts\install.ps1 update
+llmwiki update --dry-run  # 아무것도 쓰지 않고 계획만
+llmwiki update --yes      # migrate 확인을 묻지 않는다
+```
+
+순서는 데이터 repo dirty 검사 → 코드 repo `git pull --ff-only`(로컬 변경·로컬 commit이 있으면 멈춤) → 스키마 판이 다르면 `migrate --dry-run` 요약과 확인 → `migrate --apply` → 지침·skills 재생성, build·validate·lint(validate error면 커밋하지 않고 멈춤) → lock 갱신과 데이터 repo 커밋(`코드 v1.1.0→v1.2.0 (abc1234→def5678) 갱신, schema 1.1→1.2`) → 주기 루틴이 push하도록 설치돼 있을 때만 push입니다. 코드도 판도 그대로면 "이미 최신"만 냅니다. 코드 판(`VERSION`, semver)은 스키마 판이 바뀔 때 minor 이상을 올립니다.
+
+`llmwiki`는 설치기가 사용자 영역에 놓는 명령입니다(POSIX `~/.local/bin/llmwiki`, Windows `%LOCALAPPDATA%\llmwiki\llmwiki.cmd`). shell profile과 PATH는 고치지 않고, 그 자리가 PATH에 없으면 더하는 방법만 알려 줍니다. 같은 이름의 남의 파일은 덮어쓰지도 지우지도 않습니다.
+
 ## CLI
 
-모든 명령은 `--root`(또는 `LLMWIKI_ROOT`)로 대상 저장소를 바꿀 수 있고, `build`/`validate`/`lint`/`query`/`get`/`render`/`outline`은 `--fixtures`로 데모 트리를 읽습니다.
+모든 명령은 `--root`(또는 `LLMWIKI_ROOT`)로 대상 데이터를 바꿀 수 있고, `build`/`validate`/`lint`/`query`/`get`/`render`/`outline`은 `--fixtures`로 데모 트리를 읽습니다. `llmwiki` 명령이 있으면 `python3 scripts/llmwiki.py` 대신 그것을 씁니다.
 
 | 명령 | 하는 일 |
 | --- | --- |
@@ -98,6 +151,13 @@ python3 scripts/llmwiki.py repair --dry-run                             # 이미
 | `render <주소>` | `--format md\|html\|json`, `--exact`, `--section <heading block id>` |
 | `outline <주소>` | heading block 목록 — 페이지 통독 없이 섹션만 고를 때 |
 | `log` | `--action/--page/--note`로 append, 인자 없으면 `--show N`으로 조회 |
+| `migrate` | 정본을 코드의 스키마 판으로 옮긴다. 기본은 dry-run(page별 바뀌는 필드와 page 수), `--apply`는 `.llmwiki/migrate/`의 사본에 먼저 쓰고 validate를 통과하면 바꿔 끼운다(실패하면 원본 그대로). 여러 판은 등록된 변환을 이어 붙인다. 정본이 코드보다 새 판이면 거부 |
+| `init <dir>` | 빈 데이터 repo(`wiki/ raw/ config/ LOCAL.md llmwiki.lock .gitignore`, 생성 지침)와 첫 커밋. `--no-git` |
+| `adopt <dir>` | 기존 단일 repo를 데이터 repo로. 기본 dry-run, `--apply`, `--no-commit` |
+| `update` | 코드 repo pull → 데이터 repo 맞춤 (위 "갱신"). `--data` `--yes` `--dry-run` |
+| `guides` | 데이터 repo의 CLAUDE.md·AGENTS.md와 skills 링크를 다시 만든다 (같으면 쓰지 않는다). `--dry-run` |
+| `shim install\|remove\|status` | `llmwiki` 명령을 놓거나 지운다 (설치기가 부른다). `--data` `--python` |
+| `paths` | 해석된 데이터 root와 배치(설정·파생물 자리)를 JSON으로 — viewer가 이것을 읽는다 |
 
 ### 소스 frontmatter
 
@@ -215,13 +275,13 @@ python3 scripts/llmwiki_routine.py run --dry-run  # 무엇을 할지만 본다
 
 ## 개인 저장소로 밀어 올리기 (선택)
 
-이 clone은 **코드 갱신을 받는 자리**로 두고, 자기 위키는 개인 private 저장소로 밀어 올릴 수 있습니다. `origin`은 건드리지 않고 remote 하나만 더 붙입니다.
+자기 위키는 개인 private 저장소로 밀어 올릴 수 있습니다. remote 하나만 더 붙이고 `origin`은 건드리지 않습니다. 데이터 repo를 따로 두었으면(위 "두 repo 운영") remote는 데이터 repo에 붙습니다.
 
 ```bash
-./scripts/install.sh --private-remote git@github.com:me/my-wiki.git   # 이미 만든 저장소
-./scripts/install.sh --gh-create my-wiki                              # gh 로 새로 만든다
-./scripts/install.sh update                                           # origin 에서 코드 갱신
-git push private HEAD:main                                            # 위키를 개인 저장소로
+./scripts/install.sh --data ~/my-wiki --private-remote git@github.com:me/my-wiki.git   # 이미 만든 저장소
+./scripts/install.sh --data ~/my-wiki --gh-create my-wiki                              # gh 로 새로 만든다
+llmwiki update                                                                         # 코드 갱신
+git -C ~/my-wiki push private HEAD:main                                                # 위키를 개인 저장소로
 ```
 
 이름이 같은 remote가 이미 있으면 덮어쓰지 않고 그대로 둡니다. 루틴을 걸어 두었다면 커밋과 push까지 루틴이 합니다.
