@@ -12,8 +12,10 @@
    저장하고, 조회는 df·평균 길이를 live 값으로 읽어 BM25 impact 를 계산한 뒤 토큰마다 impact 상위
    MAX_POST 개만 쓴다. block 의 구조 신호(큐레이션 간선을 든 anchor, current, 미판정 conflict)는
    flag 로 두고 조회 때 곱한다 — 그래서 page 몇 개가 바뀌어도 그 page 의 항목만 고치면 된다.
+   질문 쪽 한글 run 은 어미·조사를 먼저 뗀다(`query_stem`). 정본 쪽은 그대로다.
 2. 그래프층  간선 종류별 가중 인접 리스트를 build 때 굽고, 조회 때 어휘 상위 seed 에서 2 step
-   bounded 확산을 돈다.
+   bounded 확산을 돈다. related 질량은 보내는 page 의 related 수로 나누고, 어휘 점수와는 noisy-OR 로
+   합친다 — 직접 맞은 1위는 그래프 때문에 밀리지 않고, 어휘 근거가 없는 이웃은 W_GRAPH 까지 오른다.
 3. 시간축  supersedes 체인을 build 때 head 로 접는다. 낡은 page 의 점수는 head 에 귀속되고
    낡은 page 는 head 아래 "대체됨" 자리에만 남는다. fork(한 page 를 둘이 대체)·cycle 은 접지
    않고 상태로 남긴다.
@@ -115,6 +117,28 @@ STOP_WORDS = ["나요", "가요", "인가요", "인가", "무엇", "무엇인가
               "현재", "지금", "하나요", "되나요", "있나요", "까요", "인지", "는지", "무슨", "어떻게", "얼마인가요",
               "기준으로", "따르면", "몇", "무엇을", "어디", "어디에", "이며", "이고"]
 
+# 질문의 한글 run 끝에서 떼는 어미·조사. 질문은 구어체(`~했어`·`~던데`·`컬럼은`)이고 정본은 문서체라
+# 꼬리가 만드는 2-gram(`럼은`·`렀고`·`던데`)은 정본에 드물다. df 가 작으니 idf³ 가중에서 가장 큰 몫을 받아
+# 같은 꼬리를 우연히 가진 page 를 끌어올렸다. 질문 쪽에서만 떼고 정본 색인은 그대로 둔다 — 줄기의 2-gram 은
+# 정본의 같은 낱말에도 그대로 있다. 긴 것부터 맞춘다.
+QUERY_ENDINGS = tuple(sorted(set("""
+했다던데 됐다던데 다던데 라던데 냐던데 했는데 됐는데 었는데 았는데 였는데 인가요 있나요 없나요 되나요 하나요
+했나요 됐나요 였나요 었나요 할까요 일까요 습니까 합니까 됩니까 입니까 인데요 이에요 거예요 건가요 는가요 던가요
+으려면 하려면 려면
+했어 했고 했다 했지 했나 했던 했을 했니 됐어 됐고 됐다 됐지 됐나 됐던 었어 았어 였어 었고 았고 였고 었다 았다
+였다 었지 았지 였지 었던 았던 였던 었니 났어 났다 났고
+해야 해서 하면 하는 하지 하고 하게 하니 하나 할까 한다 한데 되는 되고 되면 되지 되나 된다 는데 던데 은데 어야
+아야 어서 아서 니까 으니 더니 다고 냐고 라고 는지 은지 인지 던지 나요 가요 까요 지요 거야 건가 인가 는가 던가
+뭐야 이야 이지 이죠 예요 에요 래요 대요
+어 야 지 죠 니 냐 나 까 요
+""".split()), key=lambda s: (-len(s), s)))
+QUERY_PARTICLES = tuple(sorted(set("""
+에서는 에서도 에서의 으로는 으로도 으로서 으로써 에게서 에게는 까지는 까지도 부터는 이라고 이라는 이라면 이랑은
+에서 으로 에게 한테 께서 까지 부터 처럼 보다 마다 이나 이랑 라고 라는 이고 이며 에는 에도 와는 과는 와의 과의
+로는 로도 로서 로써 만큼 대로 밖에 조차 마저
+은 는 이 가 을 를 에 의 와 과 도 로 만 랑
+""".split()), key=lambda s: (-len(s), s)))
+
 _RUN = re.compile(r"[0-9a-z_][0-9a-z_.\-:/]*|[가-힣]+")
 _TRIM = re.compile(r"[.\-:/]+$")
 _SPLIT = re.compile(r"[_.\-:/]+")
@@ -199,13 +223,29 @@ def clip(text: str, limit: int) -> str:
     return text[: max(0, limit - 1)].rstrip() + "…"
 
 
-def tokenize(text: str) -> list[str]:
-    """한글 run → 음절 2-gram, 그 외 run → 낱말 + `_ . - : /` 로 쪼갠 조각(원 토큰 유지)."""
+def query_stem(run: str) -> str:
+    """한글 run 하나에서 어미 하나, 이어서 조사 하나를 뗀다(`바꿨다던데` → `바꿨`, `기능에서는` → `기능`).
+
+    남는 줄기가 두 글자 미만이면 떼지 않는다 — `결과`·`회의`·`정도` 같은 두 글자 낱말은 그대로다."""
+    for suffixes in (QUERY_ENDINGS, QUERY_PARTICLES):
+        for suffix in suffixes:
+            if len(run) - len(suffix) >= 2 and run.endswith(suffix):
+                run = run[: -len(suffix)]
+                break
+    return run
+
+
+def tokenize(text: str, *, query: bool = False) -> list[str]:
+    """한글 run → 음절 2-gram, 그 외 run → 낱말 + `_ . - : /` 로 쪼갠 조각(원 토큰 유지).
+
+    `query=True` 는 질문 쪽이다 — 한글 run 의 어미·조사를 먼저 뗀다(`query_stem`)."""
     text = unicodedata.normalize("NFKC", str(text)).lower()
     out: list[str] = []
     for m in _RUN.finditer(text):
         run = m.group(0)
         if "가" <= run[0] <= "힣":
+            if query:
+                run = query_stem(run)
             out.extend(run[i:i + 2] for i in range(len(run) - 1))
         else:
             run = _TRIM.sub("", run)
@@ -1205,7 +1245,7 @@ class Index:
         return out
 
     def _lex(self, query: str) -> tuple[dict[int, float], dict[int, list[tuple[float, int]]]]:
-        terms = sorted(set(tokenize(query)))
+        terms = sorted(set(tokenize(query, query=True)))
         n = self.nblocks
         sig = {"n_terms": float(len(terms)), "posted_terms": 0.0, "coverage": 0.0, "idf_coverage": 0.0,
                "raw_top": 0.0, "content_raw_top": 0.0, "top_block_impact": 0.0, "top1_best_block": 0.0,
@@ -1306,6 +1346,12 @@ class Index:
     # --------------------------------------------------------- 그래프층
     def _ppr(self, page_lex: dict[int, float], top: float
              ) -> tuple[dict[int, float], dict[int, tuple[float, str]]]:
+        """seed 에서 2 step 확산. node 집계는 max(가장 센 경로 하나), 방금 온 간선으로 되돌아가지 않는다.
+
+        curated(related) 간선의 질량은 보내는 page 의 curated 간선 수로 나눈다 — related 를 수십 개 단
+        page 의 이웃 전부가 같은 질량을 받아 직접 맞은 page 를 무더기로 누르지 않게. 짝이 하나뿐인 간선
+        (번역 짝 같은) 은 1.0 그대로다. wiki 류 간선은 build 때 받는 쪽 in-degree 로 이미 감쇠돼 있다.
+        """
         seeds = sorted(page_lex, key=lambda p: (-page_lex[p], p))[:SEEDS]
         mass = {p: page_lex[p] / top for p in seeds}
         score: dict[int, float] = {}
@@ -1317,19 +1363,25 @@ class Index:
             nxt: dict[int, float] = {}
             nxt_from: dict[int, set[int]] = {}
             decay = STEP_DECAY ** step
+            rows: list[tuple[int, int, float, str]] = []
             for i in range(0, len(srcs), 900):
                 chunk = srcs[i:i + 900]
-                for src, dst, w, own in self.db.execute(
-                        "SELECT src,dst,w,own_block FROM adj WHERE src IN (%s)" % ",".join("?" * len(chunk)), chunk):
-                    if w <= 0.0 or dst in came.get(src, ()):
-                        continue
-                    m = mass[src] * w
-                    nxt[dst] = max(nxt.get(dst, 0.0), m)
-                    nxt_from.setdefault(dst, set()).add(src)
-                    if step == 0 and w >= 1.0 and m > self._sender.get(dst, (0.0, 0))[0]:
-                        self._sender[dst] = (m, src)
-                    if m * decay > via.get(dst, (0.0, ""))[0]:
-                        via[dst] = (m * decay, own)
+                rows.extend(self.db.execute(
+                    "SELECT src,dst,w,own_block FROM adj WHERE src IN (%s)" % ",".join("?" * len(chunk)), chunk))
+            curated: dict[int, int] = {}
+            for src, _dst, w, _own in rows:
+                if w >= 1.0:
+                    curated[src] = curated.get(src, 0) + 1
+            for src, dst, w, own in rows:
+                if w <= 0.0 or dst in came.get(src, ()):
+                    continue
+                m = mass[src] * (w / curated[src] if w >= 1.0 else w)
+                nxt[dst] = max(nxt.get(dst, 0.0), m)
+                nxt_from.setdefault(dst, set()).add(src)
+                if step == 0 and w >= 1.0 and m > self._sender.get(dst, (0.0, 0))[0]:
+                    self._sender[dst] = (m, src)
+                if m * decay > via.get(dst, (0.0, ""))[0]:
+                    via[dst] = (m * decay, own)
             for dst, m in nxt.items():
                 score[dst] = score.get(dst, 0.0) + m * decay
             mass = dict(sorted(nxt.items(), key=lambda kv: (-kv[1], kv[0]))[:FRONTIER])
@@ -1363,7 +1415,11 @@ class Index:
         score = {p: page_lex[p] / top for p in cand}
         graph, via = self._ppr(page_lex, top)
         for p, g in graph.items():
-            score[p] = score.get(p, 0.0) + W_GRAPH * g
+            # noisy-OR: 그래프 근거는 어휘 근거가 비어 있는 만큼만 채운다 — s = l + e·(1 − l), e ≤ W_GRAPH.
+            # 직접 맞은 1위(l = 1) 는 그대로 1위이고, 어휘 근거가 없는 이웃은 e 까지 오른다. 둘을 더하던 때는
+            # related 가 촘촘한 위키에서 seed 의 이웃이 직접 맞은 page 를 눌렀다.
+            lex = score.get(p, 0.0)
+            score[p] = lex + W_GRAPH * min(g, 1.0) * (1.0 - lex)
 
         rids = sorted(score)
         info = self._page_info(rids)
@@ -1737,7 +1793,7 @@ def split_rows(raw: str) -> tuple[list[str], bool]:
 
 def query_weights(idx: Index, query: str) -> dict[str, float]:
     """질문 토큰 → idf². 기능어 2-gram 은 뺀다(전부 기능어면 유지)."""
-    terms = sorted(set(tokenize(query)))
+    terms = sorted(set(tokenize(query, query=True)))
     kept = [t for t in terms if t not in STOP_2G] or terms
     idf = idx.term_idf(kept)
     return {t: idf.get(t, 0.0) ** 2 for t in kept}

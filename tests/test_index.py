@@ -697,6 +697,11 @@ class RerankTest(unittest.TestCase):
         moved["keywords"] = moved["keywords"][:199]
         self.assertEqual(self.ranked([gold, moved])[0][0], "page:hub")
 
+    def test_a_conversational_tail_does_not_pull_a_page_that_shares_it(self) -> None:
+        gold = make_page("gold", "# 컬럼 이름\n\n컬럼 이름은 시간 단위 규칙으로 짓는다.\n")
+        chat = make_page("chat", "# 대화\n\n그렇게 들었다던데 아닐 수도 있다던데.\n")
+        self.assertEqual(self.ranked([gold, chat], "컬럼 이름 규칙이 바뀌었다던데")[0][0], "page:gold")
+
     def test_the_silence_signals_keep_their_raw_scale(self) -> None:
         pages = [make_page("short", "# Short\n\n배포 승인 절차.\n"), self.spread(3)]
         idx = IDX.build_memory([("wiki/x.json", p) for p in [*pages, *self.FILLER]])
@@ -708,3 +713,71 @@ class RerankTest(unittest.TestCase):
             idx.close()
         for key in ("raw_top", "coverage", "content_raw_top", "top_block_impact"):
             self.assertEqual(signals[key], raw[key], key)
+
+
+class QueryTokenTest(unittest.TestCase):
+    """질문 쪽 한글 run 은 어미 하나, 이어서 조사 하나를 떼고 2-gram 으로 쪼갠다. 정본 쪽은 그대로다."""
+
+    def test_question_tails_are_cut_before_the_bigrams(self) -> None:
+        self.assertEqual(IDX.tokenize("컬럼은"), ["컬럼", "럼은"])
+        self.assertEqual(IDX.tokenize("컬럼은", query=True), ["컬럼"])
+        self.assertEqual(IDX.tokenize("바꿨다던데 기능에서는 정답으로", query=True), ["바꿨", "기능", "정답"])
+
+    def test_two_syllable_words_and_latin_tokens_are_kept(self) -> None:
+        # 남는 줄기가 두 글자 미만이면 떼지 않는다 — 결과·회의·정도·필요는 낱말이다
+        self.assertEqual(IDX.tokenize("결과 회의 정도 필요", query=True), ["결과", "회의", "정도", "필요"])
+        text = "search_rows API v0.3 의 l1-server"
+        self.assertEqual([t for t in IDX.tokenize(text, query=True) if t.isascii()],
+                         [t for t in IDX.tokenize(text) if t.isascii()])
+
+
+class GraphTest(unittest.TestCase):
+    """간선 확산: related 질량은 보내는 page 의 related 수로 나누고, 어휘 점수와 noisy-OR 로 합친다."""
+
+    QUERY = RerankTest.QUERY
+    FILLER = RerankTest.FILLER
+
+    @staticmethod
+    def related(page: dict, *targets: str) -> dict:
+        page["links"].extend({"target": t, "label": t, "kind": "related"} for t in targets)
+        return page
+
+    def ranked(self, pages: list[dict], query: str | None = None) -> list[str]:
+        idx = IDX.build_memory([("wiki/x.json", p) for p in [*pages, *self.FILLER]])
+        try:
+            return [h.page_id for h in idx.search(query or self.QUERY, k=20).hits]
+        finally:
+            idx.close()
+
+    def test_a_partner_without_the_words_is_still_reached(self) -> None:
+        # 번역 짝: 질문 낱말은 한국어 page 에만 있고 영어 page 는 related 하나로만 닿는다
+        ko = self.related(make_page("ko", "# 등대\n\n푸른 등대 복구 규칙은 야간 점검 뒤에 적용한다.\n"), "en")
+        en = make_page("en", "# Lighthouse\n\nThe blue lighthouse recovery rule applies after the night check.\n")
+        self.assertEqual(self.ranked([ko, en], "푸른 등대 복구 규칙")[:2], ["page:ko", "page:en"])
+
+    def test_a_long_related_list_does_not_bury_the_next_match(self) -> None:
+        # 1위가 related 를 12개 달았고 이웃에는 질문 낱말이 없다. 나누지 않던 때는 이웃 12개가 모두
+        # 같은 질량을 받아 둘째로 맞은 page 위에 왔다.
+        top = self.related(make_page("top", "# Top\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n"),
+                           *[f"n{i}" for i in range(12)])
+        second = make_page("second", "# Second\n\n배포 승인은 금요일에 한다.\n")
+        neighbours = [make_page(f"n{i}", f"# N{i}\n\n이웃 메모 {i}.\n") for i in range(12)]
+        self.assertEqual(self.ranked([top, second, *neighbours])[:2], ["page:top", "page:second"])
+
+    def test_a_page_without_the_words_never_outranks_the_direct_match(self) -> None:
+        # p 는 질문 낱말이 없는데 두 경로(top→p, q→x→p)로 질량을 받는다 — 더하던 때는 1.06 으로 top(1.0) 위였다
+        top = self.related(make_page("top", "# Top\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n"), "p")
+        q = self.related(make_page("q", "# Q\n\n배포 승인 절차 메모.\n"), "x")
+        x = self.related(make_page("x", "# X\n\n중간 다리 메모.\n"), "p")
+        p = make_page("p", "# P\n\n관련 문서 묶음.\n")
+        hits = self.ranked([top, q, x, p])
+        self.assertEqual(hits[0], "page:top")
+        self.assertLess(hits.index("page:p"), hits.index("page:x"))   # 이웃은 여전히 끌려 온다
+
+    def test_a_weaker_related_match_does_not_overtake_the_direct_match(self) -> None:
+        # weak 는 top 의 유일한 짝이라 질량을 다 받고, 자기는 이웃이 넷이라 top 에 4분의 1 만 돌려준다.
+        # 차수로 나누기만 하고 더하면 weak(0.5 + 0.85) 가 top(1.0 + 0.1) 위로 간다 — noisy-OR 이 막는다.
+        top = self.related(make_page("top", "# Top\n\n배포 승인 절차는 금요일 검토 회의에서 정한다.\n"), "weak")
+        weak = self.related(make_page("weak", "# Weak\n\n배포 승인 절차 메모.\n"), "o1", "o2", "o3")
+        others = [make_page(f"o{i}", f"# O{i}\n\n다른 메모 {i}.\n") for i in (1, 2, 3)]
+        self.assertEqual(self.ranked([top, weak, *others])[:2], ["page:top", "page:weak"])
