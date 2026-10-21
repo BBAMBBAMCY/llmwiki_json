@@ -232,11 +232,11 @@ SessionStart hook (source: startup / resume / clear / compact / fork)
 - `PostCompact` 는 쓰지 않는다 — Claude Code 공식 문서상 이 이벤트는 압축 요약을
   로깅하는 용도이고 `hookSpecificOutput.additionalContext` 를 지원하지 않는다. 컴팩트
   직후 재주입은 `SessionStart` 를 `source: "compact"` 로 받는 것이 문서화된 경로다
-- 이 저장소의 `./scripts/install.sh` 는 현재 `UserPromptSubmit` 만 자동으로 등록한다.
-  `SessionStart` 도 같은 명령으로 받고 싶으면, 설치된 `hooks.UserPromptSubmit` 항목과
-  같은 `{"type": "command", "command": "<같은 명령>", "timeout": 10}` 을
-  `~/.claude/settings.json`(Claude Code) 또는 `~/.codex/hooks.json`(Codex) 의
-  `hooks.SessionStart` 배열에 그대로 추가하면 된다
+- 설치기(`install.sh`·`install.ps1`)는 같은 명령을 `hooks.UserPromptSubmit` 과 `hooks.SessionStart` 두
+  배열에 한 벌씩 등록한다(Claude Code `~/.claude/settings.json`, Codex `~/.codex/hooks.json`). 남의 그룹은
+  그대로 두고, uninstall 은 우리 것만 뺀다. `verify` 가 `<client>.session-hook` 으로 확인한다
+- Codex 는 hook 슬롯마다 신뢰를 따로 묻는다 — 같은 'Hooks need review' 화면에서 SessionStart 도 신뢰한다.
+  `verify` 의 `codex.session-trust` 가 그 상태를 알려 준다(경고만, 실패로 치지 않는다)
 
 ### 무주입 문턱은 옵션이다
 

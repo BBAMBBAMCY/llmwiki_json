@@ -1431,6 +1431,7 @@ CODEX_CONFIG = ".codex/config.toml"
 LEGACY_QMD_MCP = "qmd"
 CLAUDE_MCP_CONFIG = ".claude.json"
 CODEX_TRUST_EVENT = "user_prompt_submit"
+CODEX_SESSION_TRUST_EVENT = "session_start"
 CODEX_STALE_TRUST = "codex-trust-stale"
 
 # 실행할 수 없는 상황(스크립트 이동/삭제, 인터프리터 부재)에서도 stdin 을
@@ -1576,9 +1577,13 @@ def backup(path: Path, *, create: bool = True) -> Path | None:
     return target
 
 
-def install_hook(path: Path, command: str, *, remove: bool) -> dict[str, Any]:
-    """`hooks.UserPromptSubmit` 배열에 우리 그룹만 더하거나 뺀다.
+HOOK_EVENTS = (HOOK_EVENT, SESSION_HOOK_EVENT)
 
+
+def install_hook(path: Path, command: str, *, remove: bool) -> dict[str, Any]:
+    """`hooks.UserPromptSubmit`·`hooks.SessionStart` 배열에 우리 그룹만 더하거나 뺀다.
+
+    같은 명령 하나가 두 이벤트를 받는다 — stdin 의 hook_event_name 으로 갈린다(SessionStart 는 always 목록만).
     기존 그룹(Orca 등)은 읽고 그대로 되돌려 쓴다. 절대 덮어쓰지 않는다.
     """
     if not path.exists() and remove:
@@ -1589,20 +1594,22 @@ def install_hook(path: Path, command: str, *, remove: bool) -> dict[str, Any]:
     hooks = config.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         return {"file": str(path), "changed": False, "reason": "unexpected-shape"}
-    groups = hooks.get(HOOK_EVENT)
-    if not isinstance(groups, list):
-        groups = [] if groups is None else [groups]
-
-    before = len(groups)
-    kept = [g for g in groups
-            if not (isinstance(g, dict) and HOOK_MARKER in json.dumps(g, ensure_ascii=False))]
-    removed = before - len(kept)
-    if not remove:
-        kept.append({"hooks": [{"type": "command", "command": command,
-                                "timeout": HOOK_TIMEOUT}]})
-    hooks[HOOK_EVENT] = kept
-    if not kept:
-        hooks.pop(HOOK_EVENT)
+    counts: dict[str, dict[str, int]] = {}
+    for event in HOOK_EVENTS:
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            groups = [] if groups is None else [groups]
+        before = len(groups)
+        kept = [g for g in groups
+                if not (isinstance(g, dict) and HOOK_MARKER in json.dumps(g, ensure_ascii=False))]
+        removed = before - len(kept)
+        if not remove:
+            kept.append({"hooks": [{"type": "command", "command": command,
+                                    "timeout": HOOK_TIMEOUT}]})
+        hooks[event] = kept
+        if not kept:
+            hooks.pop(event)
+        counts[event] = {"before": before, "after": len(kept), "replaced": removed}
     if not hooks:
         # 빈 hooks 껍데기를 남기지 않는다 — 제거 뒤 파일이 원래대로 보여야 한다.
         config.pop("hooks")
@@ -1610,8 +1617,10 @@ def install_hook(path: Path, command: str, *, remove: bool) -> dict[str, Any]:
     saved = backup(path, create=not remove)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    main = counts[HOOK_EVENT]
     return {"file": str(path), "changed": True, "backup": str(saved) if saved else None,
-            "groups_before": before, "groups_after": len(kept), "replaced": removed}
+            "groups_before": main["before"], "groups_after": main["after"], "replaced": main["replaced"],
+            "events": counts}
 
 
 def install_guide(path: Path, body: str, *, remove: bool) -> dict[str, Any]:
@@ -1689,7 +1698,7 @@ def do_install(root: Path, *, remove: bool, guides: bool,
         if name == "codex" and not remove and previous and previous != command:
             # 명령이 바뀌면 Codex 는 신뢰를 다시 묻는다. verify 가 그 사실을
             # 알아야 "신뢰됨" 이라고 거짓말하지 않는다.
-            mark_codex_trust_stale(hooks_path, installed_group_index(hooks_path))
+            mark_codex_trust_stale(hooks_path)
         if name == "codex" and remove:
             clear_codex_trust_stale()
         entry: dict[str, Any] = {"hook": install_hook(hooks_path, command, remove=remove)}
@@ -1701,10 +1710,10 @@ def do_install(root: Path, *, remove: bool, guides: bool,
 
 
 # --------------------------------------------------------------------------- verify
-def installed_group_index(path: Path) -> int:
-    """hooks 배열에서 우리 그룹의 위치. 없으면 -1."""
+def installed_group_index(path: Path, event: str = HOOK_EVENT) -> int:
+    """hooks.<event> 배열에서 우리 그룹의 위치. 없으면 -1."""
     config = load_json(path, {})
-    groups = (config.get("hooks") or {}).get(HOOK_EVENT) if isinstance(config, dict) else None
+    groups = (config.get("hooks") or {}).get(event) if isinstance(config, dict) else None
     for index, group in enumerate(groups if isinstance(groups, list) else []):
         if isinstance(group, dict) and HOOK_MARKER in json.dumps(group, ensure_ascii=False):
             return index
@@ -1728,7 +1737,7 @@ def state_dir() -> Path:
     return Path(override) if override else home() / ".llmwiki"
 
 
-def codex_trust_hash(hooks_path: Path, index: int) -> str:
+def codex_trust_hash(hooks_path: Path, index: int, event: str = CODEX_TRUST_EVENT) -> str:
     """Codex 가 우리 hook 슬롯에 대해 기억하는 신뢰 지문. 없으면 빈 문자열.
 
     `[hooks.state."<hooks.json>:<event>:<group>:<hook>"]` 아래 `trusted_hash`.
@@ -1739,7 +1748,7 @@ def codex_trust_hash(hooks_path: Path, index: int) -> str:
         text = (home() / CODEX_CONFIG).read_text(encoding="utf-8")
     except OSError:
         return ""
-    section = f'[hooks.state."{hooks_path}:{CODEX_TRUST_EVENT}:{index}:0"]'
+    section = f'[hooks.state."{hooks_path}:{event}:{index}:0"]'
     if section not in text:
         return ""
     tail = text.split(section, 1)[1].split("\n[", 1)[0]
@@ -1747,7 +1756,7 @@ def codex_trust_hash(hooks_path: Path, index: int) -> str:
     return match.group(1) if match else ""
 
 
-def codex_trust(hooks_path: Path, index: int) -> str:
+def codex_trust(hooks_path: Path, index: int, event: str = CODEX_TRUST_EVENT) -> str:
     """Codex 가 지금 설치된 hook 명령을 신뢰하는지.
 
     해시 계산식은 공개돼 있지 않아 우리가 직접 검산할 수 없다. 대신 hook
@@ -1759,26 +1768,28 @@ def codex_trust(hooks_path: Path, index: int) -> str:
         return "not-installed"
     if not (home() / CODEX_CONFIG).exists():
         return "unknown"
-    current = codex_trust_hash(hooks_path, index)
+    current = codex_trust_hash(hooks_path, index, event)
     if not current:
         return "review-required"
     stale = state_dir() / CODEX_STALE_TRUST
     try:
-        if stale.read_text(encoding="utf-8").strip() == current:
+        if current in stale.read_text(encoding="utf-8").split():
             return "review-required"
     except OSError:
         pass
     return "trusted"
 
 
-def mark_codex_trust_stale(hooks_path: Path, index: int) -> None:
-    """hook 명령을 바꿨다 — 지금 지문은 옛 명령의 것이라고 적어 둔다."""
-    current = codex_trust_hash(hooks_path, index)
-    if not current:
+def mark_codex_trust_stale(hooks_path: Path) -> None:
+    """hook 명령을 바꿨다 — 지금 지문들(UserPromptSubmit·SessionStart 슬롯)은 옛 명령의 것이라고 적어 둔다."""
+    found = [codex_trust_hash(hooks_path, installed_group_index(hooks_path, hook_event), event)
+             for hook_event, event in ((HOOK_EVENT, CODEX_TRUST_EVENT), (SESSION_HOOK_EVENT, CODEX_SESSION_TRUST_EVENT))]
+    found = [h for h in found if h]
+    if not found:
         return
     target = state_dir() / CODEX_STALE_TRUST
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(current + "\n", encoding="utf-8")
+    target.write_text("\n".join(found) + "\n", encoding="utf-8")
 
 
 def clear_codex_trust_stale() -> None:
@@ -1886,6 +1897,10 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
             check(f"{name}.hook-current", found == expected,
                   "installed command matches this checkout" if found == expected
                   else "stale command — 다시 install 하라")
+        session = installed_group_index(hooks_path, SESSION_HOOK_EVENT)
+        check(f"{name}.session-hook", session >= 0,
+              f"SessionStart (group {session}) — 세션 시작·컴팩트 직후 always 목록" if session >= 0
+              else "SessionStart 에 없다 — 다시 install 하면 넣는다")
         guide = guide_path.read_text(encoding="utf-8") if guide_path.exists() else ""
         check(f"{name}.guide", "llmwiki-context:start" in guide, str(guide_path))
         if name == "codex":
@@ -1893,6 +1908,12 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
             check("codex.trust", state == "trusted",
                   f"{state} — Codex 를 한 번 띄워 hook review 에서 신뢰를 주면 된다"
                   if state != "trusted" else "trusted")
+            if session >= 0:
+                session_state = codex_trust(hooks_path, session, CODEX_SESSION_TRUST_EVENT)
+                check("codex.session-trust", True,
+                      session_state if session_state == "trusted"
+                      else f"{session_state} — 같은 hook review 에서 SessionStart 도 신뢰하면 된다",
+                      warn=session_state != "trusted")
 
     idx, why = open_index(root)
     if idx is not None:

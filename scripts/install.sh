@@ -2,7 +2,7 @@
 # llmwiki_json 자동 컨텍스트 주입 설치 스크립트.
 #
 # 이 저장소를 어디에 clone 하든, 이 스크립트가 있는 위치에서 repo root 를 찾아
-# Codex 와 Claude Code 의 UserPromptSubmit hook 을 설치한다. 저장소 경로를
+# Codex 와 Claude Code 의 UserPromptSubmit·SessionStart hook 을 설치한다. 저장소 경로를
 # 하드코딩하지 않으며, 설치 시점에 해석한 절대경로만 설정 파일에 박는다.
 #
 # 지원 범위

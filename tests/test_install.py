@@ -499,6 +499,25 @@ class UninstallTest(InstallerCase):
         self.uninstall()
         self.assertEqual(self.read(self.claude_settings), {"theme": "dark"})
 
+    def test_the_same_command_is_registered_for_session_start(self) -> None:
+        """컴팩트 직후에도 always 목록이 다시 붙으려면 SessionStart 에도 걸려 있어야 한다."""
+        foreign = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "orca-start.sh"}]}],
+                             **FOREIGN_CLAUDE["hooks"]}}
+        self.claude_settings.write_text(json.dumps({**FOREIGN_CLAUDE, **foreign}), encoding="utf-8")
+        self.install()
+        for path in (self.claude_settings, self.codex_hooks):
+            hooks = self.read(path)["hooks"]
+            prompt = [h["command"] for g in hooks["UserPromptSubmit"] for h in g["hooks"] if "llmwiki_context" in h["command"]]
+            session = [h["command"] for g in hooks["SessionStart"] for h in g["hooks"] if "llmwiki_context" in h["command"]]
+            self.assertEqual(len(prompt), 1)
+            self.assertEqual(session, prompt)
+        self.assertEqual(self.read(self.claude_settings)["hooks"]["SessionStart"][0]["hooks"][0]["command"], "orca-start.sh")
+        self.install()                                    # 다시 돌려도 한 벌뿐이다
+        self.assertEqual(len(self.read(self.claude_settings)["hooks"]["SessionStart"]), 2)
+        self.uninstall()
+        self.assertEqual(self.read(self.claude_settings), {**FOREIGN_CLAUDE, **foreign})
+        self.assertEqual(self.read(self.codex_hooks), FOREIGN_CODEX)
+
     def test_uninstall_without_install_is_harmless(self) -> None:
         before = self.snapshot()
         self.uninstall()
@@ -1020,12 +1039,15 @@ class VerifyTest(InstallerCase):
         out = self.verify(1)
         self.assertIn("FAIL codex.hook", out)
         self.assertIn("FAIL claude.hook", out)
+        self.assertIn("FAIL claude.session-hook", out)
 
     def test_verify_sees_the_installed_hook_and_probes_end_to_end(self) -> None:
         self.install()
         out = self.verify(1)  # 가짜 HOME 에는 Codex 신뢰 기록이 없으므로 1
         self.assertIn("ok   codex.hook:", out)
         self.assertIn("ok   claude.hook:", out)
+        self.assertIn("ok   claude.session-hook:", out)
+        self.assertIn("ok   codex.session-hook:", out)
         self.assertIn("ok   probe-injects:", out)
         self.assertIn("ok   probe-silent-on-noise:", out)
         self.assertIn("ok   fail-open:", out)
@@ -1109,6 +1131,11 @@ class TrustStateTest(InstallerCase):
         self.assertEqual(ctx.codex_trust(hooks, 1), "trusted")
         self.assertEqual(ctx.codex_trust(hooks, 2), "review-required")
         self.assertEqual(ctx.codex_trust(hooks, -1), "not-installed")
+        # SessionStart 슬롯은 따로 신뢰를 받는다
+        self.assertEqual(ctx.codex_trust(hooks, 1, ctx.CODEX_SESSION_TRUST_EVENT), "review-required")
+        with config.open("a", encoding="utf-8") as fh:
+            fh.write(f'[hooks.state."{hooks}:session_start:1:0"]\ntrusted_hash = "sha256:cafe"\n')
+        self.assertEqual(ctx.codex_trust(hooks, 1, ctx.CODEX_SESSION_TRUST_EVENT), "trusted")
 
 
 if __name__ == "__main__":
