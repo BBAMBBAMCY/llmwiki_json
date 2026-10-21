@@ -257,6 +257,28 @@ class PowerShellRunTest(unittest.TestCase):
             self.assertIn("dry-run", result.stdout)
 
 
+    def test_the_location_options_match_install_sh(self) -> None:
+        result = run_pwsh(["-Help"])
+        for flag in ("-Here", "-Path"):
+            self.assertIn(flag, result.stdout)
+        sh = subprocess.run(["sh", str(INSTALLER_SH), "--help"], capture_output=True, text=True).stdout
+        for flag in ("--here", "--path DIR"):
+            self.assertIn(flag, sh)
+
+    def test_dry_run_with_a_path_creates_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            target = Path(tmp) / "opmd" / "llmwiki"
+            env = dict(os.environ, HOME=str(home), LLMWIKI_STATE_DIR=str(home / ".llmwiki"))
+            result = run_pwsh(["install", "--dry-run", "--force", "--claude", "--python", sys.executable,
+                               "-Path", str(target)], env=env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("dry-run", result.stdout)
+            self.assertFalse(target.exists())
+            self.assert_untouched(home)
+
+
 @unittest.skipIf(PWSH is None, "pwsh 가 없다 — 두 repo 설치 실행은 건너뛴다")
 class PowerShellTwoRepoTest(unittest.TestCase):
     """install.ps1 의 -Data: hook·MCP 의 LLMWIKI_ROOT, llmwiki shim, 데이터 repo 지침, update 위임."""
@@ -311,7 +333,7 @@ class PowerShellTwoRepoTest(unittest.TestCase):
         (plain / "wiki").mkdir(parents=True)
         out = self.ps1("update", "-Data", str(plain), "--force", "--python", sys.executable)
         self.assertNotEqual(out.returncode, 0)
-        self.assertIn("데이터 repo 가 아니다", out.stderr)      # 이 판정은 llmwiki.py update 의 것이다
+        self.assertIn("git 저장소가 아니다", out.stderr)      # 이 판정은 llmwiki.py update(제자리 갱신)의 것이다
 
 
 if __name__ == "__main__":

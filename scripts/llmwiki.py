@@ -2876,14 +2876,7 @@ def update(ws: Workspace, *, yes: bool = False, dry_run: bool = False, post_pull
     code = P.CODE_ROOT
     try:
         if not ws.split:
-            if ws.root != code:
-                raise WikiError(f"{ws.root} 는 데이터 repo 가 아니다 ({P.LOCK_NAME} 없음) — "
-                                "`llmwiki init` 으로 만들거나 `llmwiki adopt` 로 바꾼다")
-            # 단일 repo: 코드와 위키가 한 저장소다. 코드만 ff 로 받고, 위키 커밋이 있으면 받지 못한다.
-            print("단일 repo 모드 — 코드만 받는다. 위키 커밋이 있으면 fast-forward 가 안 된다: "
-                  "`llmwiki adopt <이 저장소>` 로 데이터를 나누면 update 가 둘을 따로 맞춘다.")
-            R.pull_code(code, dry_run=dry_run)
-            return 0
+            return update_in_place(ws, yes=yes, dry_run=dry_run, post_pull=post_pull, prior=prior)
         data = ws.root
         if not post_pull:
             if R.is_own_repo(data):
@@ -2904,6 +2897,97 @@ def update(ws: Workspace, *, yes: bool = False, dry_run: bool = False, post_pull
     except R.UpdateStop as exc:
         print(f"update 멈춤: {exc}", file=sys.stderr)
         return 1
+
+
+def update_in_place(ws: Workspace, *, yes: bool, dry_run: bool, post_pull: bool, prior: str) -> int:
+    """설치한 폴더 하나(코드+위키)를 그 자리에서 갱신한다.
+
+    앞단계: 폴더가 깨끗한지 → upstream 을 받아(숨은 ref) 지난번 기준과 새 판을 이 폴더 코드 파일에 3-way 로
+    얹는다(충돌이면 아무것도 쓰지 않고 멈춘다). 뒷단계는 방금 얹은 새 코드가 `update --post-pull` 로 한다:
+    migrate → build·validate·lint → 이 폴더 git 에 커밋 → 주기 루틴이 push 하도록 설치돼 있으면 push.
+    """
+    root = ws.root
+    if post_pull:
+        return update_in_place_post(ws, yes=yes, dry_run=dry_run, prior=prior)
+    if not R.is_own_repo(root):
+        raise R.UpdateStop(f"{root} 가 git 저장소가 아니다 — 제자리 갱신은 이 폴더의 git 으로 기준 판을 찾는다")
+    if not (root / "scripts" / "llmwiki.py").is_file():
+        raise R.UpdateStop(f"{root} 에 scripts/llmwiki.py 가 없다 — 코드와 위키가 한 폴더인 설치가 아니다")
+    changes = R.dirty(root)
+    if changes:
+        raise R.UpdateStop(f"커밋되지 않은 변경이 있다 — 먼저 커밋하거나 치운다:\n{changes[:800]}")
+    url = R.upstream_url(root)
+    new = R.fetch_upstream(root, url)
+    local = R.LocalBlobs(root)
+    base, how = R.find_base(root, new, local)
+    old_version, new_version = P.code_version(root), R.tree_version(root, new)
+    print(f"upstream {url} — 기준 {base[:7]} ({how}) → 새 판 {new[:7]} (v{old_version}→v{new_version})")
+    plan = R.plan_sync(root, base, new, local)
+    for title, items in (("새 판으로", [rel for rel, _ in plan["write"]]), ("합친다 (양쪽이 고쳤고 겹치지 않는다)",
+                         [rel for rel, _, _ in plan["merge"]]), ("지운다 (upstream 이 지웠다)", plan["delete"]),
+                         ("남긴다 (이 폴더에서만 고쳤다)", plan["kept"]), ("충돌 — 같은 자리를 양쪽이 고쳤다", plan["conflicts"])):
+        if items:
+            print(f"{title} ({len(items)})")
+            for rel in items[:200]:
+                print(f"  {rel}")
+    if plan["conflicts"]:
+        raise R.UpdateStop(f"충돌 {len(plan['conflicts'])}개 — 아무것도 쓰지 않았다. 위 파일을 upstream({new[:7]}) 쪽과 "
+                           "맞춘 뒤(또는 이 폴더의 수정을 되돌려 커밋한 뒤) 다시 update 한다")
+    if dry_run:
+        print("[dry-run] 코드를 얹은 뒤 migrate · build · validate · lint · 커밋")
+        return 0
+    R.apply_sync(root, plan)
+    R.write_upstream(root, url, new, new_version)
+    argv = [sys.executable, str(root / "scripts" / "llmwiki.py"), "--root", str(root), "update", "--post-pull",
+            "--prior-commit", f"{base}:{old_version}"] + (["--yes"] if yes else [])
+    sys.stdout.flush()
+    return subprocess.call(argv)
+
+
+def update_in_place_post(ws: Workspace, *, yes: bool, dry_run: bool, prior: str) -> int:
+    """제자리 갱신의 뒷단계 — 얹은 새 코드로 돈다."""
+    root = ws.root
+    base, _, old_version = prior.partition(":")
+    record = R.read_upstream(root)
+    new, new_version = str(record.get("commit") or ""), P.code_version(root)
+    versions = data_schema_versions(ws)
+    old_schema = versions[0] if versions else SCHEMA_VERSION
+    if versions and P.schema_key(versions[-1]) > P.schema_key(SCHEMA_VERSION):
+        raise R.UpdateStop(f"정본 schema {versions[-1]} 가 코드 schema {SCHEMA_VERSION} 보다 새것이다")
+    if versions and versions != [SCHEMA_VERSION]:
+        plan = migrate(ws, apply=False)
+        print_migrate(plan)
+        if not confirm(f"정본 {plan['pages_changed']} page 를 schema {old_schema}→{SCHEMA_VERSION} 로 옮길까?", yes):
+            print("옮기지 않고 멈춘다 — 코드는 얹었고 커밋하지 않았다 (`git checkout -- .` 로 되돌릴 수 있다)")
+            return 1
+        migrate(ws, apply=True)
+        print(f"migrate: {plan['pages_changed']} page 를 schema {SCHEMA_VERSION} 로 옮겼다")
+    try:
+        build(ws)
+        built = ""
+    except WikiError as exc:
+        built = str(exc)
+    errors, warnings = lint(ws)
+    print(f"build {'통과' if not built else '실패'} · validate {len(errors)} errors · lint {len(warnings)} warnings")
+    if built or errors:
+        for line in (errors or [built])[:20]:
+            print(f"ERROR {line}")
+        print("validate error 가 있어 커밋하지 않고 멈춘다 — 고친 뒤 커밋한다 (얹은 코드는 그대로 있다)", file=sys.stderr)
+        return 1
+    message = R.update_message(old_version or "0.0.0", new_version, base, new, old_schema, SCHEMA_VERSION)
+    sha = R.commit_all(root, message)
+    if not sha:
+        print(f"이미 최신 — 코드 v{new_version} ({new[:7] or '-'}), schema {SCHEMA_VERSION}")
+        return 0
+    print(f"커밋 {sha[:7]}: {message}")
+    target = R.routine_push_target(root)
+    if target:
+        status, branch = R.git(root, "rev-parse", "--abbrev-ref", "HEAD")
+        status, out = R.git(root, "push", target[0], f"HEAD:{branch}", timeout=300.0)
+        print(f"push {target[0]}/{branch}: {'완료' if status == 0 else '실패 — ' + out[-200:]}")
+    else:
+        print("push 하지 않았다 (주기 루틴의 push 가 꺼져 있다)")
+    return 0
 
 
 def update_post(ws: Workspace, *, yes: bool, dry_run: bool, prior: str) -> int:

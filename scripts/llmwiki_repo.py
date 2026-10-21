@@ -833,6 +833,216 @@ def update_message(old_version: str, new_version: str, old_sha: str, new_sha: st
             f"schema {old_schema}→{new_schema}")
 
 
+# --------------------------------------------------------------------------- 제자리 갱신 (한 폴더)
+# 설치한 폴더 하나에 코드와 위키가 같이 산다. update 는 공개 저장소의 새 코드를 그 폴더 안 코드 파일에
+# 3-way 로 합친다 — 기준(base)은 지난번에 맞춘 upstream commit 이다. 사용자가 고친 코드·INIT.md 의 개인
+# 규칙은 남고, 같은 자리를 양쪽이 고쳤으면 아무것도 쓰지 않고 멈춘다. 새 폴더를 만들지 않고 폴더·remote 이름도
+# 바꾸지 않는다. 받아 온 upstream 은 숨은 ref 하나(refs/llmwiki/upstream)에만 둔다.
+UPSTREAM_URL = "https://github.com/BrilliantTiger/llmwiki_json"
+UPSTREAM_BRANCH = "main"
+UPSTREAM_FILE = "tools/upstream.json"
+UPSTREAM_REF = "refs/llmwiki/upstream"
+ENV_UPSTREAM = "LLMWIKI_UPSTREAM"
+# upstream 에도 있지만 이 폴더의 데이터인 자리 — 갱신이 손대지 않는다
+NOT_CODE = ("wiki/", "raw/", "index/", "viewer/public/data/", "tools/config/", "bench/", UPSTREAM_FILE)
+
+
+def is_code_path(rel: str) -> bool:
+    return not any(rel == p.rstrip("/") or rel.startswith(p) for p in NOT_CODE)
+
+
+def read_upstream(root: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((Path(root) / UPSTREAM_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def upstream_url(root: Path) -> str:
+    """받아 올 곳: 환경변수 → 지난번 기록 → 공개 저장소를 가리키는 remote → 공개 저장소 주소."""
+    if os.environ.get(ENV_UPSTREAM):
+        return os.environ[ENV_UPSTREAM]
+    recorded = str(read_upstream(root).get("url") or "")
+    if recorded:
+        return recorded
+    want = remote_key(UPSTREAM_URL)
+    for url in remotes(Path(root)).values():
+        if remote_key(url) == want:
+            return url
+    return UPSTREAM_URL
+
+
+def fetch_upstream(root: Path, url: str, branch: str = UPSTREAM_BRANCH) -> str:
+    status, out = git(Path(root), "fetch", "-q", "--no-tags", url, f"+refs/heads/{branch}:{UPSTREAM_REF}",
+                      timeout=600.0)
+    if status != 0:
+        raise UpdateStop(f"upstream 을 받지 못했다 ({url}): {out[-400:]}")
+    return git(Path(root), "rev-parse", UPSTREAM_REF)[1].strip()
+
+
+def tree_files(root: Path, commit: str) -> dict[str, tuple[str, str]]:
+    """commit 의 코드 파일 {경로: (mode, blob)}."""
+    status, out = git(Path(root), "ls-tree", "-r", "-z", commit)
+    files: dict[str, tuple[str, str]] = {}
+    for entry in out.split("\0") if status == 0 else []:
+        if not entry:
+            continue
+        meta, _, rel = entry.partition("\t")
+        mode, kind, blob = meta.split()
+        if kind == "blob" and is_code_path(rel):
+            files[rel] = (mode, blob)
+    return files
+
+
+class LocalBlobs:
+    """작업 트리 파일의 (mode, blob) — 한 번 계산한 것은 다시 계산하지 않는다."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+        self.cache: dict[str, tuple[str, str] | None] = {}
+
+    def __call__(self, rel: str) -> tuple[str, str] | None:
+        if rel not in self.cache:
+            self.cache[rel] = self._compute(rel)
+        return self.cache[rel]
+
+    def _compute(self, rel: str) -> tuple[str, str] | None:
+        path = self.root / rel
+        if path.is_symlink():
+            proc = subprocess.run(["git", "hash-object", "--stdin"], cwd=self.root, input=os.readlink(path).encode(),
+                                  capture_output=True)
+            return ("120000", proc.stdout.decode().strip())
+        if not path.is_file():
+            return None
+        status, out = git(self.root, "hash-object", "--", rel)
+        mode = "100755" if os.access(path, os.X_OK) else "100644"
+        return (mode, out.strip()) if status == 0 else None
+
+
+def same(a: tuple[str, str] | None, b: tuple[str, str] | None) -> bool:
+    """내용이 같은가 — 실행 비트 차이는 보지 않는다(Windows 체크아웃은 비트가 없다)."""
+    if a is None or b is None:
+        return a is b
+    return a[1] == b[1] and (a[0] == "120000") == (b[0] == "120000")
+
+
+def find_base(root: Path, new: str, local: LocalBlobs, limit: int = 400) -> tuple[str, str]:
+    """이 폴더의 코드가 어느 upstream commit 위에 있는지 (commit, 어떻게 찾았나).
+
+    지난번 기록 → 같은 이력이면 merge-base → 이력이 따로면(파일을 복사해 만든 저장소) upstream commit 중
+    코드 파일이 가장 많이 같은 것.
+    """
+    recorded = str(read_upstream(root).get("commit") or "")
+    if recorded and git(Path(root), "cat-file", "-e", f"{recorded}^{{commit}}")[0] == 0:
+        return recorded, "기록"
+    status, out = git(Path(root), "merge-base", "HEAD", new)
+    if status == 0 and out.strip():
+        return out.strip(), "merge-base"
+    status, out = git(Path(root), "rev-list", f"--max-count={limit}", new)
+    best, best_diff = new, None
+    for commit in out.split() if status == 0 else []:
+        files = tree_files(root, commit)
+        diff = sum(0 if same(local(rel), blob) else 1 for rel, blob in files.items())
+        if best_diff is None or diff < best_diff:
+            best, best_diff = commit, diff
+            if diff == 0:
+                break
+    return best, f"가장 가까운 판 (코드 파일 {best_diff}개 차이)"
+
+
+def blob_bytes(root: Path, blob: str) -> bytes:
+    return subprocess.run(["git", "cat-file", "blob", blob], cwd=root, capture_output=True, check=True).stdout
+
+
+def plan_sync(root: Path, base: str, new: str, local: LocalBlobs | None = None) -> dict[str, Any]:
+    """base→new 의 코드 변경을 이 폴더에 얹을 계획. 쓰지 않는다."""
+    root = Path(root)
+    local = local or LocalBlobs(root)
+    old, fresh = tree_files(root, base), tree_files(root, new)
+    plan: dict[str, Any] = {"write": [], "delete": [], "merge": [], "kept": [], "conflicts": []}
+    for rel in sorted(set(old) | set(fresh)):
+        b, n, here = old.get(rel), fresh.get(rel), local(rel)
+        if same(here, n):
+            continue                                   # 이미 새 판과 같다
+        if same(here, b):                              # 사용자가 손대지 않았다 — 새 판으로
+            (plan["delete"].append(rel) if n is None else plan["write"].append((rel, n)))
+            continue
+        if same(b, n):                                 # upstream 은 그대로, 사용자만 고쳤다 — 남긴다
+            plan["kept"].append(rel)
+            continue
+        if b and n and here and "120000" not in (b[0], n[0], here[0]):
+            merged = merge_text(root, rel, b[1], n[1])
+            if merged is not None:
+                plan["merge"].append((rel, n[0], merged))
+                continue
+        plan["conflicts"].append(rel)
+    return plan
+
+
+def merge_text(root: Path, rel: str, base_blob: str, new_blob: str) -> bytes | None:
+    """git merge-file 로 (이 폴더 파일, base, new) 를 합친다. 충돌이면 None."""
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="llmwiki-merge-") as tmp:
+        base_path, new_path = Path(tmp) / "base", Path(tmp) / "new"
+        base_path.write_bytes(blob_bytes(root, base_blob))
+        new_path.write_bytes(blob_bytes(root, new_blob))
+        proc = subprocess.run(["git", "merge-file", "-p", str(root / rel), str(base_path), str(new_path)],
+                              capture_output=True)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def apply_sync(root: Path, plan: dict[str, Any]) -> None:
+    root = Path(root)
+    for rel, (mode, blob) in plan["write"]:
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or path.exists():
+            path.unlink()
+        data = blob_bytes(root, blob)
+        if mode == "120000" and os.name != "nt":
+            os.symlink(data.decode(), path)
+            continue
+        path.write_bytes(data)
+        if mode == "100755":
+            path.chmod(path.stat().st_mode | 0o111)
+    for rel, mode, data in plan["merge"]:
+        (root / rel).write_bytes(data)
+    for rel in plan["delete"]:
+        path = root / rel
+        if path.is_symlink() or path.exists():
+            path.unlink()
+        parent = path.parent
+        while parent != root and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+
+
+def write_upstream(root: Path, url: str, commit: str, version: str) -> None:
+    path = Path(root) / UPSTREAM_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"url": url, "branch": UPSTREAM_BRANCH, "commit": commit, "version": version},
+                               ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def tree_version(root: Path, commit: str) -> str:
+    status, out = git(Path(root), "show", f"{commit}:{P.VERSION_FILE}")
+    text = out.strip() if status == 0 else ""
+    return text if P.SEMVER.match(text) else "0.0.0"
+
+
+def commit_all(root: Path, message: str) -> str:
+    """이 폴더의 바뀐 것 전부를 커밋한다(시작할 때 깨끗했으니 update 가 바꾼 것뿐이다). 없으면 빈 문자열."""
+    git(Path(root), "add", "-A")
+    status, _ = git(Path(root), "diff", "--cached", "--quiet")
+    if status == 0:
+        return ""
+    status, out = git(Path(root), "commit", "-q", "-m", message)
+    if status != 0:
+        raise UpdateStop(f"커밋 실패: {out}")
+    return git(Path(root), "rev-parse", "HEAD")[1].strip()
+
+
 # --------------------------------------------------------------------------- llmwiki shim
 # `llmwiki` 명령은 사용자 영역의 작은 shim 이다 — 코드 repo 의 llmwiki.py 를 부른다. shell profile 과
 # 시스템 PATH 는 건드리지 않는다. 표지가 없는 같은 이름의 파일은 남의 것이라 덮어쓰지도 지우지도 않는다.
