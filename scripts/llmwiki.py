@@ -2575,6 +2575,8 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
             pending.append((rel, work, count))
     report: dict[str, Any] = {"dry_run": dry_run, "fixed": fixed, "undecided": undecided,
                               "pages": [work["id"] for _rel, work, _n in pending]}
+    if not ws.fixtures:
+        report["pending_file"] = write_repair_pending(ws, undecided)
     if dry_run or not pending:
         return report
     for rel, work, count in pending:
@@ -2582,6 +2584,22 @@ def repair(ws: Workspace, *, dry_run: bool = False) -> dict[str, Any]:
         append_log(ws, {"action": "repair", "page_id": work["id"], "blocks": count, "dest": rel})
     report["build"] = build(ws, changed=sorted({rel for rel, _w, _n in pending}))
     return report
+
+
+REPAIR_PENDING = "repair-pending.json"
+
+
+def write_repair_pending(ws: Workspace, undecided: list[dict[str, Any]]) -> str:
+    """판정할 수 없어 고치지 않은 block 목록을 `.llmwiki/repair-pending.json` 에 남긴다(정본이 아니라 보고서다).
+    남은 것이 없으면 지난 목록을 지운다. 돌려주는 값은 그 파일의 root 상대경로(없으면 빈 문자열)."""
+    path = ws.layout.derived / REPAIR_PENDING
+    if not undecided:
+        path.unlink(missing_ok=True)
+        return ""
+    items = [{"page_id": item["page_id"], "block_id": item["block_id"], "reason": item["reason"],
+              "problems": item["problems"], "diff": item["diff"]} for item in undecided]
+    dump(path, {"at": today(), "count": len(items), "items": items}, pretty=True)
+    return ws.rel(path)
 
 
 def print_repair(report: dict[str, Any]) -> None:
@@ -2599,8 +2617,10 @@ def print_repair(report: dict[str, Any]) -> None:
         print(f"판정할 수 없는 {len(report['undecided'])}건 (고치지 않았다):")
         for item in report["undecided"]:
             print(f"  {item['page_id']}#{item['block_id']}" if item["block_id"] else f"  {item['page_id']}")
-    tail = " (dry-run — 아무것도 쓰지 않았다)" if report["dry_run"] else ""
+    tail = " (dry-run — 정본은 아무것도 쓰지 않았다)" if report["dry_run"] else ""
     print(f"{len(report['fixed'])} fixed, {len(report['undecided'])} undecided{tail}")
+    if report.get("pending_file"):
+        print(f"판정 불가 목록: {report['pending_file']} — edit 로 고친다")
 
 
 # --------------------------------------------------------------------------- search
@@ -2945,7 +2965,11 @@ def build_parser() -> argparse.ArgumentParser:
     ed.add_argument("--fixtures", action="store_true")
 
     rep = sub.add_parser("repair", help="re-derive drifted blocks where history/updated tell which side is newer")
-    rep.add_argument("--dry-run", action="store_true", help="print the diffs and verdicts, write nothing")
+    rep_mode = rep.add_mutually_exclusive_group()
+    rep_mode.add_argument("--dry-run", action="store_true",
+                          help="print the diffs and verdicts, write no page (the undecided list still goes "
+                               "to .llmwiki/repair-pending.json)")
+    rep_mode.add_argument("--apply", action="store_true", help="fix the decidable blocks (the default)")
     rep.add_argument("--json", action="store_true", dest="as_json")
     rep.add_argument("--fixtures", action="store_true")
 

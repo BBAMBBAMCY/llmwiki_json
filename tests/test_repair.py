@@ -124,8 +124,30 @@ class RepairTest(RepairCase):
         self.assertEqual(len(report["undecided"]), 1)
 
     def test_a_clean_wiki_has_nothing_to_repair(self) -> None:
-        self.assertEqual(llmwiki.repair(self.ws), {"dry_run": False, "fixed": [], "undecided": [], "pages": []})
+        self.assertEqual(llmwiki.repair(self.ws), {"dry_run": False, "fixed": [], "undecided": [], "pages": [],
+                                                   "pending_file": ""})
         self.cli("repair")
+        self.cli("repair", "--apply")
+
+    def test_undecided_blocks_are_listed_in_repair_pending(self) -> None:
+        pending = self.root / ".llmwiki" / "repair-pending.json"
+        self.drift(data="기록 없이 바꾼 말.")
+        before = self.dest.read_bytes()
+        proc = self.cli("repair", "--dry-run", expect=1)                    # dry-run 도 목록은 남긴다 (보고서다)
+        self.assertIn(".llmwiki/repair-pending.json", proc.stdout)
+        listed = json.loads(pending.read_text(encoding="utf-8"))
+        self.assertEqual(listed["count"], 1)
+        self.assertEqual((listed["items"][0]["page_id"], listed["items"][0]["block_id"]), ("page:note", self.para))
+        self.assertIn("변경 기록이 없다", listed["items"][0]["reason"])
+        self.assertTrue(listed["items"][0]["diff"])
+        self.assertEqual(self.dest.read_bytes(), before)                    # 정본은 그대로
+        # 판정 불가가 사라지면 지난 목록도 지운다
+        self.drift(data="첫 문단은 [[beta]] 를 본다.")
+        self.cli("repair", "--apply")
+        self.assertFalse(pending.exists())
+
+    def test_dry_run_and_apply_do_not_mix(self) -> None:
+        self.cli("repair", "--dry-run", "--apply", expect=2)
 
 
 class RepairLinksAndLegacyTest(WorkspaceCase):
