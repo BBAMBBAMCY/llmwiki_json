@@ -269,39 +269,98 @@ GLOSSARY_CONFIG = "tools/config/glossary.json"
 SYN_W = 0.5
 
 
+def glossary_key(text: str) -> str:
+    """질문과 사전 표기를 맞대는 꼴 — NFKC·소문자·공백 하나."""
+    return " ".join(unicodedata.normalize("NFKC", str(text)).lower().split())
+
+
+def _wordish(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch == "_") or "가" <= ch <= "힣"
+
+
+def _latin(ch: str) -> bool:
+    return ch.isascii() and (ch.isalnum() or ch == "_")
+
+
 @dataclass(frozen=True)
 class Glossary:
-    """묶음마다 표기별 질문 토큰 집합. `expand` 가 질문 토큰에 더할 토큰을 낸다."""
+    """`tools/config/glossary.json` 의 묶음.
+
+    `starts` 는 표기의 첫 글자 → (표기, 묶음 번호) 긴 것부터, `groups` 는 묶음마다 넓힐 때 더하는 표기별 토큰,
+    `sources` 는 표기 → 그 표기의 토큰(넓힌 토큰 idf 상한의 기준)이다.
+    """
+    starts: dict[str, tuple[tuple[str, int], ...]]
     groups: tuple[tuple[frozenset[str], ...], ...]
+    sources: dict[str, frozenset[str]]
 
-    def expand(self, terms: set[str]) -> dict[str, frozenset[str]]:
-        """질문 토큰 → 더할 토큰과 그 토큰을 부른 표기(질문에 나온 표기의 토큰들).
+    def found(self, query: str) -> dict[int, frozenset[str]]:
+        """질문 본문에서 찾은 묶음 → 찾은 표기들의 토큰.
 
-        표기의 토큰이 모두 질문에 있으면 그 표기가 나온 것이다. 한 토큰을 여러 표기가 부르면 합친다."""
+        토큰이 아니라 본문으로 맞댄다 — 한 글자 낱말(`키 지정` 의 `키`)은 2-gram 이 없어 토큰으로는 `지정` 만
+        남고, 그러면 `지정` 만 나와도 묶음이 불렸다. 표기는 낱말 첫머리에서만 맞대고(`변수` 는 `변수별` 에는
+        맞고 `환경변수` 에는 안 맞는다), 한 자리에서는 가장 긴 표기만 잡는다(`실행 계획` 이 잡히면 그 안의
+        `계획` 은 따로 잡지 않는다). 영문·숫자로 끝나는 표기는 뒤도 낱말 경계여야 한다(`ae` 는 `aerial` 에 안 맞는다).
+        """
+        text = glossary_key(query)
+        out: dict[int, frozenset[str]] = {}
+        i, n = 0, len(text)
+        while i < n:
+            if not _wordish(text[i]) or (i and _wordish(text[i - 1])):
+                i += 1
+                continue
+            hit = ""
+            for key, group in self.starts.get(text[i], ()):
+                if hit and key != hit:
+                    break
+                end = i + len(key)
+                if text.startswith(key, i) and not (_latin(key[-1]) and end < n and _latin(text[end])):
+                    hit = key
+                    out[group] = out.get(group, frozenset()) | self.sources[key]
+            i += len(hit) if hit else 1
+        return out
+
+    def expand(self, query: str, terms: set[str]) -> dict[str, frozenset[str]]:
+        """질문 → 더할 토큰과 그 토큰을 부른 표기의 토큰. 질문 토큰에 이미 있는 것은 더하지 않는다."""
         extra: dict[str, frozenset[str]] = {}
-        for group in self.groups:
-            found = frozenset().union(*(member for member in group if member <= terms))
-            if found:
-                for member in group:
-                    for term in member - terms:
-                        extra[term] = extra.get(term, frozenset()) | found
+        for group, source in self.found(query).items():
+            for member in self.groups[group]:
+                for term in member - terms:
+                    extra[term] = extra.get(term, frozenset()) | source
         return extra
 
 
 def parse_glossary(groups: Any) -> Glossary | None:
-    """`[[표기, …], …]` → Glossary. 토큰이 없는 표기(한 글자 한글 등)는 빼고, 표기가 둘 이상 남은 묶음만 둔다."""
-    out: list[tuple[frozenset[str], ...]] = []
+    """`[[표기, …], …]` → Glossary.
+
+    넓힐 때 더하는 것은 낱말마다 토큰이 있는 표기뿐이다 — `키 지정` 은 질문에서 잡히긴 해도 더하면 `지정` 만
+    남아 엉뚱한 page 를 올린다. 두 글자 미만 표기는 빼고, 표기가 둘 이상이고 더할 표기가 하나라도 있는 묶음만 둔다.
+    """
+    starts: dict[str, list[tuple[str, int]]] = {}
+    targets: list[tuple[frozenset[str], ...]] = []
+    sources: dict[str, frozenset[str]] = {}
     for group in groups if isinstance(groups, list) else []:
         if not isinstance(group, list):
             continue
-        members: list[frozenset[str]] = []
+        keys: list[str] = []
+        whole: list[frozenset[str]] = []
         for word in group:
-            toks = frozenset(tokenize(word, query=True)) if isinstance(word, str) else frozenset()
-            if toks and toks not in members:
-                members.append(toks)
-        if len(members) >= 2:
-            out.append(tuple(members))
-    return Glossary(tuple(out)) if out else None
+            key = glossary_key(word) if isinstance(word, str) else ""
+            if len(key.replace(" ", "")) < 2 or key in keys:
+                continue
+            keys.append(key)
+            toks = frozenset(tokenize(key, query=True))
+            sources[key] = sources.get(key, frozenset()) | toks
+            if toks and toks not in whole and all(tokenize(w, query=True) for w in key.split()):
+                whole.append(toks)
+        if len(keys) < 2 or not whole:
+            continue
+        for key in keys:
+            starts.setdefault(key[0], []).append((key, len(targets)))
+        targets.append(tuple(whole))
+    if not targets:
+        return None
+    return Glossary({ch: tuple(sorted(found, key=lambda kv: (-len(kv[0]), kv[0], kv[1]))) for ch, found in starts.items()},
+                    tuple(targets), sources)
 
 
 _GLOSSARIES: dict[str, tuple[tuple[int, int], Glossary | None]] = {}
@@ -1323,11 +1382,13 @@ class Index:
         weights = dict.fromkeys(tokenize(query, query=True), 1.0)
         if self.glossary is None or not weights:
             return weights
-        extra = self.glossary.expand(set(weights))
+        extra = self.glossary.expand(query, set(weights))
         if extra:
             idf = self.term_idf(sorted(set(extra) | set().union(*extra.values())))
             for term, source in extra.items():
-                own, cap = idf.get(term, 0.0), max(idf.get(t, 0.0) for t in source)
+                own = idf.get(term, 0.0)
+                # 토큰이 없는 표기(`할 일`)가 불렀으면 견줄 idf 가 없다 — 그때는 깎지 않는다
+                cap = max((idf.get(t, 0.0) for t in source), default=own)
                 if own > 0.0:
                     weights[term] = SYN_W * min(1.0, cap / own) ** IDF_POW
         return weights

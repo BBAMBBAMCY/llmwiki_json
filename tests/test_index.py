@@ -824,6 +824,24 @@ class GlossaryTest(IndexCase):
         self.assertEqual((result.mode, pages[0]["id"]), ("index", "page:golden-set"))
         self.assertEqual(llmwiki.query(self.ws, self.QUERY)[0]["id"], "page:golden-set")
 
+    def test_members_are_matched_on_the_question_text(self) -> None:
+        g = IDX.parse_glossary([["key designation", "키 지정", "키 설정"], ["feature", "변수"],
+                                ["explain", "실행 계획"], ["schedule", "계획"], ["ae", "이상사례"], ["todo", "할 일"]])
+        added = lambda q: set(g.expand(q, set(IDX.tokenize(q, query=True))))      # noqa: E731
+        # 한 글자 낱말이 섞인 표기도 본문으로 잡힌다. 그러나 `지정` 하나로는 잡히지 않고, `키 설정` 은 더하지 않는다
+        self.assertEqual(added("L2 키 지정 흐름"), {"key", "designation"})
+        self.assertEqual(added("지정 흐름"), set())
+        self.assertEqual(added("할 일 목록"), {"todo"})
+        # 낱말 첫머리에서만 맞댄다 — 뒤에 조사·접미가 붙는 것은 된다
+        self.assertEqual(added("변수별 통계"), {"feature"})
+        self.assertEqual(added("환경변수 이름"), set())
+        # 한 자리에서는 가장 긴 표기만 — `실행 계획` 안의 `계획` 은 따로 잡지 않는다
+        self.assertEqual(added("실행 계획을 본다"), {"explain"})
+        self.assertEqual(added("배포 계획"), {"schedule"})
+        # 영문으로 끝나는 표기는 뒤도 낱말 경계여야 한다
+        self.assertEqual(added("aerial 사진"), set())
+        self.assertEqual(added("AE 사건명"), {"이상", "상사", "사례"})
+
     def test_coverage_counts_only_the_words_of_the_question(self) -> None:
         plain = self.memory().search(self.QUERY).signals
         wide = self.memory(IDX.parse_glossary(self.GROUPS)).search(self.QUERY).signals
