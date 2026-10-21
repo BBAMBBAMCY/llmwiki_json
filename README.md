@@ -4,6 +4,8 @@ AI가 유지보수하는 JSON-canonical 개인 지식 위키입니다. JSON이 �
 
 Karpathy의 LLM Wiki 패턴을 따릅니다. 질문할 때마다 원본을 다시 조립하는 RAG 앱이 아니라, LLM이 지식을 한 번 통합해 두고 계속 갱신하는 누적형 위키입니다.
 
+> **v1.1.0 이전부터 쓰던 사람:** 코드와 위키가 한 저장소에 있던 옛 구조는 AI 에이전트에게 맡겨 옮길 수 있습니다. Claude Code나 Codex에 "https://github.com/BrilliantTiger/llmwiki_json/blob/main/docs/upgrade.md 를 읽고 내 llmwiki 를 업그레이드해 줘"라고 하면 됩니다. 절차는 [docs/upgrade.md](docs/upgrade.md)에 있습니다.
+
 이 저장소에 담긴 `wiki/` 내용은 구조를 보여주기 위한 **데모 데이터**입니다. `raw/demo/`의 원본을 그대로 ingest해 만든 것이라 지우고 자기 소스로 다시 시작하면 됩니다.
 
 ## 핵심 구조
@@ -111,7 +113,7 @@ cd ~/my-wiki && llmwiki ingest raw/첫-소스.md --type source --project 내-프
 
 ### 기존 단일 repo를 전환
 
-옛 clone(코드와 위키가 한 저장소, 파생물까지 커밋됐을 수 있다)을 데이터 repo로 바꿉니다. 코드는 따로 clone한 최신 코드 repo의 것을 씁니다.
+옛 clone(코드와 위키가 한 저장소, 파생물까지 커밋됐을 수 있다)을 데이터 repo로 바꿉니다. 코드는 따로 clone한 최신 코드 repo의 것을 씁니다. 백업·사용자 수정 코드 확인·remote 정리·push까지 포함한 전체 절차(AI 에이전트가 그대로 따라 하는 판)는 [docs/upgrade.md](docs/upgrade.md)입니다.
 
 ```bash
 ~/llmwiki-code/scripts/install.sh --data ~/old-wiki

@@ -1864,6 +1864,8 @@ def verify(root: Path, *, clients: Iterable[str] = CLIENTS,
         stale = sorted(name for name, ok in current.items() if not ok)
         check("guides-current", not stale, "생성 지침·skills 링크가 최신이다" if not stale
               else f"낡았다: {', '.join(stale)} — `llmwiki guides` (또는 update) 로 다시 만든다")
+    else:
+        check("layout", True, "단일 repo (코드·데이터가 한 곳) — 두 repo 로 나누는 법은 docs/upgrade.md")
     shim = R.shim_state()
     shim_ok = shim["exists"] and shim["ours"] and Path(shim["code"] or "/").resolve() == P.CODE_ROOT
     check("shim", shim_ok,

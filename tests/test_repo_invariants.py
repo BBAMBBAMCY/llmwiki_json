@@ -93,6 +93,47 @@ class SourceLayoutTest(unittest.TestCase):
         self.assertIn("index/search.sqlite*", ignored)
 
 
+class UpgradeGuideTest(unittest.TestCase):
+    """docs/upgrade.md 는 AI 에이전트가 그대로 실행하는 절차서다 — 적힌 명령·옵션·키가 실제로 있어야 한다."""
+
+    guide = (REPO / "docs" / "upgrade.md").read_text(encoding="utf-8")
+
+    def test_installer_options_exist_in_both_installers(self) -> None:
+        sh = (REPO / "scripts" / "install.sh").read_text(encoding="utf-8")
+        ps1 = (REPO / "scripts" / "install.ps1").read_text(encoding="utf-8")
+        used = set(re.findall(r"install\.sh[^\n`]*", self.guide))
+        long_opts = {o for line in used for o in re.findall(r"(?<![\w-])--[a-z][a-z-]+", line)}
+        self.assertTrue({"--data", "--yes", "--ingest-routine"} <= long_opts, long_opts)
+        for opt in long_opts | set(re.findall(r"`(--[a-z][a-z-]+) <", self.guide)):
+            self.assertIn(opt, sh, f"install.sh 에 {opt} 가 없다")
+            self.assertIn(opt, ps1, f"install.ps1 에 {opt} 가 없다")
+        for opt in re.findall(r"install\.ps1[^\n`]*", self.guide):
+            for name in re.findall(r"(?<![\w-])-([A-Z]\w+)", opt):
+                self.assertIn(f"-{name}", ps1, f"install.ps1 에 -{name} 가 없다")
+
+    def test_cli_subcommands_exist(self) -> None:
+        cli = (REPO / "scripts" / "llmwiki.py").read_text(encoding="utf-8")
+        commands = set(re.findall(r"`LW (\w+)", self.guide))
+        self.assertTrue({"adopt", "update", "repair", "guides"} <= commands, commands)
+        for name in commands:
+            self.assertIn(f'add_parser("{name}"', cli, f"llmwiki {name} 가 없다")
+
+    def test_routine_state_keys_match_what_the_installer_records(self) -> None:
+        routine = (REPO / "scripts" / "llmwiki_routine.py").read_text(encoding="utf-8")
+        for key in ("agent", "interval", "push", "remote"):
+            self.assertIn(f"`{key}`", self.guide)
+            self.assertIn(f'"{key}": {key}', routine)
+
+    def test_readme_and_install_doc_point_to_it(self) -> None:
+        self.assertIn("docs/upgrade.md", (REPO / "README.md").read_text(encoding="utf-8"))
+        self.assertIn("upgrade.md", (REPO / "docs" / "install.md").read_text(encoding="utf-8"))
+
+    def test_adopt_renames_the_code_remote_as_the_guide_says(self) -> None:
+        from tests.support import _load
+        repo = _load("llmwiki_repo_for_guide", REPO / "scripts" / "llmwiki_repo.py")
+        self.assertIn(f"`{repo.CODE_REMOTE}`", self.guide)
+
+
 class AppContractTest(unittest.TestCase):
     """The graph app reads graph.json, stats.json and pages/*.json — keep their shape."""
 

@@ -3,6 +3,8 @@
 이 저장소를 clone 한 뒤 한 번 실행하면, Codex 와 Claude Code 가 모든 질문 앞에서
 이 위키의 정본 근거를 자동으로 붙이기 시작한다.
 
+v1.1.0 이전의 단일 repo 를 쓰던 사람은 [upgrade.md](upgrade.md) 를 따른다(AI 에이전트에게 읽혀 맡길 수 있다).
+
 ```bash
 git clone <repo> ~/anywhere/llmwiki_json
 cd ~/anywhere/llmwiki_json
