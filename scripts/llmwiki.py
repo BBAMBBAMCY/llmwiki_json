@@ -1324,7 +1324,9 @@ map_delta = search_index.map_delta
 
 def build(ws: Workspace, *, changed: Iterable[str] | None = None, full: bool = False,
           heading_paths: bool = False) -> dict[str, Any]:
-    """정본 → index/*.json + search.sqlite + viewer/public/data. 결과는 cold 든 증분이든 같은 바이트다.
+    """정본 → index/*.json + search.sqlite + viewer 데이터. 결과는 cold 든 증분이든 같은 바이트다.
+    자리는 배치가 정한다: 단일 repo 는 `index/`·`viewer/public/data/`, 분리 모드는 `.llmwiki/index/`·
+    `.llmwiki/viewer-data/` (git 에서 빠진다). 산출물에 적힌 경로는 어느 쪽이든 데이터 root 상대경로다.
 
     `changed` 는 힌트다: 그 파일만 다시 sha 를 내고, `wiki/**/*.json` mtime 스캔으로 힌트 밖의 변경이
     보이면 전량으로 떨어진다. 증분은 검색 색인의 바뀐 page 행만 갈아 끼우고(`llmwiki_index.update`),
@@ -2649,7 +2651,8 @@ def build_parser() -> argparse.ArgumentParser:
     rep.add_argument("--json", action="store_true", dest="as_json")
     rep.add_argument("--fixtures", action="store_true")
 
-    for name, help_text in (("build", "regenerate index/ (incl. search.sqlite) and viewer public data"),
+    for name, help_text in (("build", "regenerate index/ (incl. search.sqlite) and viewer data "
+                                      "(under .llmwiki/ in a data repo)"),
                             ("validate", "schema + structural checks"),
                             ("lint", "links, conflicts, orphans, stale index")):
         p = sub.add_parser(name, help=help_text)

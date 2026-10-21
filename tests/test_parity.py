@@ -67,8 +67,20 @@ class BuildDeterminismTest(unittest.TestCase):
         proc = run("build", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         report = json.loads(proc.stdout)
-        self.assertTrue(report["self_consistent"], report["differing"])
-        self.assertGreater(report["files"], 0)
+        self.assertEqual([r["mode"] for r in report["modes"]], ["single", "split"])
+        for mode in report["modes"]:
+            self.assertTrue(mode["self_consistent"], mode["differing"])
+            self.assertTrue(mode["incremental_matches_full"], mode["incremental_differing"])
+            self.assertGreater(mode["files"], 0)
+        # 같은 정본이면 단일 repo 와 분리 모드가 같은 산출물을 낸다 (자리만 다르다)
+        self.assertTrue(report["modes_match"])
+
+    def test_one_mode_can_be_checked_alone(self) -> None:
+        proc = run("build", "--json", "--mode", "split")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["mode"], "split")
+        self.assertTrue(report["search_index_bytes_identical"])
 
     def test_the_harness_leaves_official_artifacts_alone(self) -> None:
         index = REPO / "index"

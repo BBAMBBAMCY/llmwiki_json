@@ -22,6 +22,9 @@
     공식 `index/` 와 `viewer/public/data/` 는 건드리지 않는다.
     `--candidate '<명령>'` 을 주면 그 명령을 세 번째 build 로 보고 같은 방식으로
     대조한다 — 나중에 TS build 가 생기면 그대로 꽂으면 된다.
+    `--mode` 는 shadow 배치다: `single` 은 코드와 데이터가 한 저장소(`index/`, `viewer/public/data/`),
+    `split` 은 `llmwiki.lock` 이 있는 데이터 repo(`config/`, 파생물 `.llmwiki/`) 를 이 코드로 굽는다.
+    기본 `both` 는 둘 다 돌린다.
 
 어느 쪽도 저장소의 정본이나 공식 산출물을 쓰지 않는다.
 """
@@ -46,7 +49,9 @@ PROBE_PY = HERE / "probe.py"
 PROBE_TS = HERE / "probe.ts"
 SWEEP_PY = HERE / "sweep.py"
 SWEEP_TS = HERE / "sweep.ts"
-ARTIFACT_DIRS = ("index", "viewer/public/data")
+ARTIFACT_DIRS = {"single": ("index", "viewer/public/data"),
+                 "split": (".llmwiki/index", ".llmwiki/viewer-data")}
+SEARCH_DB = {"single": "index/search.sqlite", "split": ".llmwiki/index/search.sqlite"}
 # corpus 는 답이 다를 수 있다는 것 자체가 결과다. 프로세스 종료 코드는
 # "기록해 둔 예상과 어긋났는가" 만 본다.
 OK, DIVERGED, MISSING = "match", "diverge", "missing"
@@ -166,10 +171,10 @@ def sweep(args: argparse.Namespace) -> int:
     return 1 if failed or report["casefold"]["unknownUnicode"] else 0
 
 
-def fingerprint(root: Path) -> dict[str, str]:
+def fingerprint(root: Path, mode: str = "single") -> dict[str, str]:
     """산출물 트리 -> {저장소 상대경로: sha256}. 경로도 내용도 계약이다."""
     out: dict[str, str] = {}
-    for rel in ARTIFACT_DIRS:
+    for rel in ARTIFACT_DIRS[mode]:
         base = root / rel
         if not base.exists():
             continue
@@ -183,22 +188,34 @@ def fingerprint(root: Path) -> dict[str, str]:
     return out
 
 
-def shadow_build(command: list[str], label: str) -> dict[str, str]:
+def make_shadow(tmp: str, mode: str) -> Path:
+    """정본만 복사한 임시 데이터 root. single 은 코드 사본까지 함께 둔 한 저장소, split 은 데이터 repo 다."""
+    shadow = Path(tmp) / ("repo" if mode == "single" else "data")
+    shadow.mkdir()
+    copies = (("wiki", "wiki"), ("tools/config", "tools/config"), ("tools/schema", "tools/schema"),
+              ("scripts", "scripts")) if mode == "single" else (("wiki", "wiki"), ("tools/config", "config"))
+    for rel, dest in copies:
+        source = ROOT / rel
+        if source.exists():
+            shutil.copytree(source, shadow / dest, ignore=shutil.ignore_patterns("__pycache__"))
+    if mode == "split":
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import llmwiki_paths  # noqa: E402  (표준 라이브러리만 쓰는 모듈)
+        llmwiki_paths.write_lock(shadow, llmwiki_paths.lock_payload(
+            schema_version=llmwiki_paths.SCHEMA_VERSION, code_commit="", code=ROOT, updated="2000-01-01"))
+    return shadow
+
+
+def shadow_build(command: list[str], label: str, mode: str = "single") -> dict[str, str]:
     """정본만 복사한 임시 저장소에서 build 를 돌리고 산출물 지문을 돌려준다."""
     with tempfile.TemporaryDirectory(prefix="llmwiki-parity-") as tmp:
-        shadow = Path(tmp) / "repo"
-        shadow.mkdir()
-        for rel in ("wiki", "tools/config", "tools/schema", "scripts"):
-            source = ROOT / rel
-            if source.exists():
-                shutil.copytree(source, shadow / rel,
-                                ignore=shutil.ignore_patterns("__pycache__"))
+        shadow = make_shadow(tmp, mode)
         env = {**os.environ, "LLMWIKI_ROOT": str(shadow)}
         proc = subprocess.run(command, capture_output=True, text=True, cwd=shadow, env=env)
         if proc.returncode != 0:
             raise SystemExit(f"{label} build 실패 (exit {proc.returncode})\n{proc.stderr}")
-        prints = fingerprint(shadow)
-        prints["#search_logical"] = logical_digest(shadow / "index" / "search.sqlite")
+        prints = fingerprint(shadow, mode)
+        prints["#search_logical"] = logical_digest(shadow / SEARCH_DB[mode])
         return prints
 
 
@@ -216,15 +233,10 @@ def logical_digest(path: Path) -> str:
         db.close()
 
 
-def incremental_pair(command: list[str]) -> tuple[dict[str, str], dict[str, str]]:
+def incremental_pair(command: list[str], mode: str = "single") -> tuple[dict[str, str], dict[str, str]]:
     """같은 shadow 에서 (cold → 편집 → `--changed` 증분) 과 (편집된 정본의 cold) 의 지문 쌍."""
     with tempfile.TemporaryDirectory(prefix="llmwiki-parity-inc-") as tmp:
-        shadow = Path(tmp) / "repo"
-        shadow.mkdir()
-        for rel in ("wiki", "tools/config", "tools/schema", "scripts"):
-            source = ROOT / rel
-            if source.exists():
-                shutil.copytree(source, shadow / rel, ignore=shutil.ignore_patterns("__pycache__"))
+        shadow = make_shadow(tmp, mode)
         env = {**os.environ, "LLMWIKI_ROOT": str(shadow)}
 
         def run(argv: list[str], label: str) -> None:
@@ -235,71 +247,98 @@ def incremental_pair(command: list[str]) -> tuple[dict[str, str], dict[str, str]
         run(command, "python#cold")
         target = next((p for p in sorted((shadow / "wiki").rglob("*.json")) if p.name != "log.jsonl"), None)
         if target is None:
-            prints = fingerprint(shadow)
+            prints = fingerprint(shadow, mode)
             return prints, prints
         pages = json.loads(target.read_text(encoding="utf-8"))
         page = pages[0] if isinstance(pages, list) else pages
         page["summary"] = (page.get("summary") or "") + " (parity 증분 확인)"
         target.write_text(json.dumps(pages, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         run([*command, "--changed", target.relative_to(shadow).as_posix()], "python#incremental")
-        inc = fingerprint(shadow)
-        inc["#search_logical"] = logical_digest(shadow / "index" / "search.sqlite")
+        inc = fingerprint(shadow, mode)
+        inc["#search_logical"] = logical_digest(shadow / SEARCH_DB[mode])
         run([*command, "--full"], "python#cold2")
-        cold = fingerprint(shadow)
-        cold["#search_logical"] = logical_digest(shadow / "index" / "search.sqlite")
+        cold = fingerprint(shadow, mode)
+        cold["#search_logical"] = logical_digest(shadow / SEARCH_DB[mode])
         return inc, cold
 
 
-def build(args: argparse.Namespace) -> int:
+def unprefixed(rel: str, mode: str) -> str:
+    """산출물 경로에서 배치 접두어를 떼고 (index|viewer) 이름만 남긴다."""
+    for kind, prefix in zip(("index", "viewer"), ARTIFACT_DIRS[mode]):
+        if rel.startswith(prefix + "/"):
+            return f"{kind}/{rel[len(prefix) + 1:]}"
+    return rel
+
+
+def build_mode(args: argparse.Namespace, mode: str) -> dict[str, Any]:
     oracle_cmd = [python(), str(ROOT / "scripts" / "llmwiki.py"), "build"]
-    first = shadow_build(oracle_cmd, "python#1")
-    second = shadow_build(oracle_cmd, "python#2")
+    first = shadow_build(oracle_cmd, f"python#1[{mode}]", mode)
+    second = shadow_build(oracle_cmd, f"python#2[{mode}]", mode)
     report: dict[str, Any] = {
+        "mode": mode,
         "files": len(first),
         "self_consistent": first == second,
         "differing": sorted(k for k in set(first) | set(second) if first.get(k) != second.get(k)),
-        "search_index_bytes_identical": first.get("index/search.sqlite") == second.get("index/search.sqlite"),
+        "search_index_bytes_identical": first.get(SEARCH_DB[mode]) == second.get(SEARCH_DB[mode]),
         "search_root_identical": first.get("#search_logical") == second.get("#search_logical"),
+        # 배치 접두어(index/ · .llmwiki/index/ …)를 뗀 내용 지문 — 같은 정본이면 두 배치가 같은 것을 내야 한다
+        "content_digest": hashlib.sha256(json.dumps(sorted(
+            (unprefixed(k, mode), v) for k, v in first.items())).encode()).hexdigest(),
     }
     # 세 번째: cold build 뒤 page 하나를 고쳐 증분(--changed) 으로 굽고, 같은 정본의 cold build 와 대조한다.
     if not args.candidate:
-        inc, cold = incremental_pair(oracle_cmd)
+        inc, cold = incremental_pair(oracle_cmd, mode)
         report["incremental_matches_full"] = inc == cold
         report["incremental_differing"] = sorted(k for k in set(inc) | set(cold) if inc.get(k) != cold.get(k))
         report["incremental_search_root_identical"] = inc.get("#search_logical") == cold.get("#search_logical")
     if args.candidate:
-        candidate = shadow_build(args.candidate.split(), "candidate")
+        candidate = shadow_build(args.candidate.split(), "candidate", mode)
         report["candidate_files"] = len(candidate)
         report["candidate_matches"] = candidate == first
         report["candidate_only"] = sorted(set(candidate) - set(first))
         report["oracle_only"] = sorted(set(first) - set(candidate))
         report["content_differs"] = sorted(
             k for k in set(first) & set(candidate) if first[k] != candidate[k])
+    return report
 
+
+def print_build(report: dict[str, Any], args: argparse.Namespace) -> None:
+    print(f"[{report['mode']}]")
+    print(f"산출물 파일 수      : {report['files']}")
+    print(f"두 번 돌려 동일     : {'예' if report['self_consistent'] else '아니오'}")
+    print(f"search.sqlite 바이트: {'동일' if report['search_index_bytes_identical'] else '다름'}"
+          f" (search_root {'동일' if report['search_root_identical'] else '다름'})")
+    if report["differing"]:
+        print(f"  달라진 파일: {', '.join(report['differing'])}")
+    if "incremental_matches_full" in report:
+        print(f"증분 build == cold     : {'예' if report['incremental_matches_full'] else '아니오'}"
+              f" (search_root {'동일' if report['incremental_search_root_identical'] else '다름'})")
+        if report["incremental_differing"]:
+            print(f"  달라진 파일: {', '.join(report['incremental_differing'])}")
+    if args.candidate:
+        print(f"후보 구현과 동일    : {'예' if report['candidate_matches'] else '아니오'}")
+        for key, label in (("candidate_only", "후보에만 있는 파일"),
+                           ("oracle_only", "정본에만 있는 파일"),
+                           ("content_differs", "내용이 다른 파일")):
+            if report.get(key):
+                print(f"  {label}: {', '.join(report[key])}")
+
+
+def build(args: argparse.Namespace) -> int:
+    modes = ("single", "split") if args.mode == "both" else (args.mode,)
+    reports = [build_mode(args, mode) for mode in modes]
+    same = len({r["content_digest"] for r in reports}) == 1
     if args.as_json:
-        print(json.dumps(report, ensure_ascii=False, indent=2))
+        print(json.dumps(reports[0] if len(reports) == 1 else {"modes": reports, "modes_match": same},
+                         ensure_ascii=False, indent=2))
     else:
-        print(f"산출물 파일 수      : {report['files']}")
-        print(f"두 번 돌려 동일     : {'예' if report['self_consistent'] else '아니오'}")
-        print(f"search.sqlite 바이트: {'동일' if report['search_index_bytes_identical'] else '다름'}"
-              f" (search_root {'동일' if report['search_root_identical'] else '다름'})")
-        if report["differing"]:
-            print(f"  달라진 파일: {', '.join(report['differing'])}")
-        if "incremental_matches_full" in report:
-            print(f"증분 build == cold     : {'예' if report['incremental_matches_full'] else '아니오'}"
-                  f" (search_root {'동일' if report['incremental_search_root_identical'] else '다름'})")
-            if report["incremental_differing"]:
-                print(f"  달라진 파일: {', '.join(report['incremental_differing'])}")
-        if args.candidate:
-            print(f"후보 구현과 동일    : {'예' if report['candidate_matches'] else '아니오'}")
-            for key, label in (("candidate_only", "후보에만 있는 파일"),
-                               ("oracle_only", "정본에만 있는 파일"),
-                               ("content_differs", "내용이 다른 파일")):
-                if report.get(key):
-                    print(f"  {label}: {', '.join(report[key])}")
-    if not report["self_consistent"] or not report.get("incremental_matches_full", True):
-        return 1
-    return 0 if not args.candidate or report["candidate_matches"] else 1
+        for report in reports:
+            print_build(report, args)
+        if len(reports) > 1:
+            print(f"단일 repo == 분리 모드: {'예' if same else '아니오'} (배치 접두어를 뗀 산출물 내용)")
+    failed = not same or any(not r["self_consistent"] or not r.get("incremental_matches_full", True)
+                             or (args.candidate and not r["candidate_matches"]) for r in reports)
+    return 1 if failed else 0
 
 
 def main() -> None:
@@ -314,6 +353,9 @@ def main() -> None:
         p.set_defaults(handler=handler)
     sub.choices["build"].add_argument(
         "--candidate", help="후보 build 명령 (예: 'bun tools/parity/build.ts')")
+    sub.choices["build"].add_argument(
+        "--mode", choices=("single", "split", "both"), default="both",
+        help="shadow 배치: 단일 repo · 분리 모드(llmwiki.lock 데이터 repo) · 둘 다 (기본)")
     args = parser.parse_args()
     raise SystemExit(args.handler(args))
 

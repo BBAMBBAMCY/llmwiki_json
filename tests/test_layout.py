@@ -143,5 +143,47 @@ class ConfigLocationTest(SplitCase):
         self.assertEqual(paths["config"], str(self.data / "tools" / "config"))
 
 
+class DerivedLocationTest(SplitCase):
+    def build_tree(self) -> dict[str, bytes]:
+        self.wiki("build")
+        base = self.data / ".llmwiki"
+        return {p.relative_to(base).as_posix(): p.read_bytes() for p in sorted(base.rglob("*"))
+                if p.is_file() and not p.name.startswith("search.work.") and not p.name.endswith(("-wal", "-shm"))}
+
+    def test_split_mode_builds_under_dot_llmwiki_only(self) -> None:
+        self.write_data_page(make_page("a", "# A\n\n[[b]] 를 본다.\n", projects=["alpha"]))
+        self.write_data_page(make_page("b", "# B\n\n[[a]] 로 돌아온다.\n", projects=["alpha"]))
+        first = self.build_tree()
+        self.assertIn("index/search.sqlite", first)
+        self.assertIn("index/catalog.json", first)
+        self.assertIn("viewer-data/graph.json", first)
+        self.assertFalse((self.data / "index").exists())
+        self.assertFalse((self.data / "viewer").exists())
+        self.assertFalse((self.code / "index").exists())
+        self.assertFalse((self.code / "viewer").exists())
+        # 결정성: 지우고 다시 build 해도 같은 바이트, 증분 build 도 cold 와 같은 바이트
+        shutil.rmtree(self.data / ".llmwiki")
+        self.assertEqual(self.build_tree(), first)
+        page = json.loads((self.data / "wiki" / "concepts" / "a.json").read_text(encoding="utf-8"))
+        page["summary"] = "바뀐 요약"
+        (self.data / "wiki" / "concepts" / "a.json").write_text(json.dumps(page, ensure_ascii=False), encoding="utf-8")
+        self.wiki("build", "--changed", "wiki/concepts/a.json")
+        base = self.data / ".llmwiki"
+        incremental = {p.relative_to(base).as_posix(): p.read_bytes() for p in sorted(base.rglob("*"))
+                       if p.is_file() and not p.name.startswith("search.work.")
+                       and not p.name.endswith(("-wal", "-shm"))}
+        shutil.rmtree(base)
+        self.assertEqual(self.build_tree(), incremental)
+
+    def test_hook_reads_the_split_index(self) -> None:
+        self.write_data_page(make_page("a", "# 분리 색인\n\n분리 모드 색인에서 찾아야 하는 고유한 문장 zebrafinch.\n",
+                                       projects=["alpha"]))
+        self.wiki("build")
+        out = self.run_code("llmwiki_context.py", "search", "zebrafinch 분리 색인", "--json")
+        found = json.loads(out.stdout)
+        self.assertEqual(found["mode"], "index")
+        self.assertEqual(found["results"][0]["id"], "page:a")
+
+
 if __name__ == "__main__":
     unittest.main()
