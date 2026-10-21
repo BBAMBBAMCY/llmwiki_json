@@ -176,8 +176,8 @@ update는 `git pull`로 합치지 않고 **코드 파일만** 골라 얹습니�
 | `log` | `--action/--page/--note`로 append, 인자 없으면 `--show N`으로 조회 |
 | `migrate` | 정본을 코드의 스키마 판으로 옮긴다. 기본은 dry-run(page별 바뀌는 필드와 page 수), `--apply`는 `.llmwiki/migrate/`의 사본에 먼저 쓰고 validate를 통과하면 바꿔 끼운다(실패하면 원본 그대로). 여러 판은 등록된 변환을 이어 붙인다. 정본이 코드보다 새 판이면 거부 |
 | `init <dir>` | 빈 데이터 repo(`wiki/ raw/ config/ LOCAL.md llmwiki.lock .gitignore`, 생성 지침)와 첫 커밋. `--no-git` |
-| `adopt <dir>` | 기존 단일 repo를 데이터 repo로. 기본 dry-run, `--apply`, `--no-commit` |
-| `update` | 코드 repo pull → 데이터 repo 맞춤 (위 "갱신"). `--data` `--yes` `--dry-run` |
+| `adopt <dir>` | (선택, 두 repo 운영) 한 폴더 설치를 데이터 repo로 나눈다. 기본 dry-run, `--apply`, `--no-commit` |
+| `update` | 공개 저장소의 새 코드를 이 폴더에 얹고 migrate·build·커밋 (위 "업데이트"). 두 repo 운영이면 코드 repo pull → 데이터 repo 맞춤. `--yes` `--dry-run` `--data` |
 | `guides` | 데이터 repo의 CLAUDE.md·AGENTS.md와 skills 링크를 다시 만든다 (같으면 쓰지 않는다). `--dry-run` |
 | `shim install\|remove\|status` | `llmwiki` 명령을 놓거나 지운다 (설치기가 부른다). `--data` `--python` |
 | `paths` | 해석된 데이터 root와 배치(설정·파생물 자리)를 JSON으로 — viewer가 이것을 읽는다 |

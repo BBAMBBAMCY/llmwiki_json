@@ -3152,8 +3152,9 @@ def build_parser() -> argparse.ArgumentParser:
     ado.add_argument("--no-commit", action="store_true", help="leave the result uncommitted")
     ado.add_argument("--json", action="store_true", dest="as_json")
 
-    up = sub.add_parser("update", help="pull the code repo (ff-only) and bring the data repo to it: "
-                                       "migrate, guides, build/validate/lint, lock, commit")
+    up = sub.add_parser("update", help="one-folder install: lay the new upstream code onto this folder (3-way), "
+                                       "then migrate, build/validate/lint, commit. split data repo: pull the code "
+                                       "repo (ff-only) and bring the data repo to it")
     up.add_argument("--data", help="data repo (default: the resolved data root)")
     up.add_argument("--yes", "-y", action="store_true", help="do not ask before migrating")
     up.add_argument("--dry-run", action="store_true", help="write nothing (no pull, no migrate, no commit)")

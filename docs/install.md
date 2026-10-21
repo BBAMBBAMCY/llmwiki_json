@@ -3,14 +3,67 @@
 이 저장소를 clone 한 뒤 한 번 실행하면, Codex 와 Claude Code 가 모든 질문 앞에서
 이 위키의 정본 근거를 자동으로 붙이기 시작한다.
 
-install 은 현재 폴더에 설치할지 새 경로에 설치할지 묻는다(`--here` · `--path DIR`). 옛 판을 쓰던 사람은 [upgrade.md](upgrade.md) 를 따른다 — 설치한 폴더 그대로 갱신하고, AI 에이전트에게 읽혀 맡길 수 있다.
+설치는 **폴더 하나**다. 설치한 폴더 안에 코드(`scripts/ viewer/ tools/ INIT.md VERSION …`)와
+위키(`wiki/ raw/`)가 같이 있고, 쓰는 것도 업데이트도 그 폴더 안에서 한다. `~/opmd/llmwiki` 에
+설치했으면 `~/opmd/llmwiki`, `~/llmwiki_json` 에 설치했으면 `~/llmwiki_json` 이 그 폴더다.
+
+## 설치
 
 ```bash
-git clone <repo> ~/anywhere/llmwiki_json
-cd ~/anywhere/llmwiki_json
-./scripts/install.sh --dry-run   # 무엇이 바뀔지 먼저 본다
-./scripts/install.sh             # 실제 설치
+git clone https://github.com/BrilliantTiger/llmwiki_json ~/llmwiki_json   # 경로는 원하는 대로
+cd ~/llmwiki_json
+./scripts/install.sh --dry-run   # 무엇이 바뀔지 먼저 본다 (아무것도 쓰지 않음)
+./scripts/install.sh             # 묻는 것에 답한다 (아래)
+./scripts/install.sh verify      # 상태 점검
 ```
+
+Windows 는 같은 명령·같은 옵션의 `scripts\install.ps1` 이다([아래](#windows)).
+
+install 은 차례로 묻는다. 질문은 TTY 에서만 하고, `--yes` 나 비대화형이면 묻지 않는다.
+
+1. **설치할 곳** — 현재 폴더면 Enter, 다른 곳에 두려면 그 경로. 새 경로를 적으면 이 폴더를 그
+   경로에 복사(git clone, `origin` 주소도 그대로)하고 그곳의 설치기로 설치한다. 그 경로는 비어
+   있거나 없어야 한다. 묻지 않으려면 `--here`(현재 폴더) · `--path DIR`(새 경로).
+2. **주기 ingest 루틴** — `raw/` 에 새 소스가 들어오면 에이전트가 위키에 넣게 걸지
+   (`--ingest-routine claude|codex|none`). [아래](#주기-ingest-루틴).
+3. **개인 저장소** — 위키를 밀어 올릴 private 저장소. 폴더의 git 에 이미 개인 저장소 remote 가
+   있으면(공개 코드 저장소가 아닌 remote, 지금 branch 가 따르는 것 우선) **묻지 않고** 그것을 쓰고
+   `개인 저장소: 이미 붙어 있다 — origin → …` 만 알린다. 없을 때만 묻는다
+   (`--private-remote URL` · `--gh-create NAME` · `--no-private`). [아래](#개인-저장소).
+
+**공개 저장소(`BrilliantTiger/llmwiki_json`)는 받기만 하는 곳이다.** 위키를 그리로 push 하지 않는다 —
+설치기는 그 주소를 개인 저장소로 붙이지 않고, `llmwiki update` 와 주기 루틴도 그 주소로는 밀지 않는다.
+
+묻지 않고 설치: `./scripts/install.sh --here --yes --ingest-routine none`.
+
+설치 뒤: Codex 를 쓰면 한 번 띄워 'Hooks need review' 에서 신뢰를 준다([아래](#codex-hook-신뢰) —
+UserPromptSubmit 과 SessionStart 둘). 열려 있던 Claude Code·Codex 세션은 새로 연다. `~/.local/bin`
+(Windows `%LOCALAPPDATA%\llmwiki`)이 PATH 에 없다는 안내가 나오면 그대로 더한다.
+
+## 업데이트
+
+설치한 폴더에서:
+
+```bash
+llmwiki update --dry-run   # 무엇이 바뀌는지 먼저 본다 (아무것도 쓰지 않음)
+llmwiki update             # 새 코드를 이 폴더에 얹고 migrate·build·validate 뒤 커밋
+git push                   # 개인 저장소로 (주기 루틴의 push 를 켜 두었으면 update 가 민다)
+```
+
+`llmwiki update` 는 `scripts/install.sh update` · `scripts\install.ps1 update` 와 같다(`-y` 면 스키마
+변환 확인을 묻지 않는다). `git pull` 로 합치지 않고 공개 저장소의 **코드 파일만** 이 폴더에 3-way 로
+얹는다 — 위키 commit 이 있어도 된다. 손대지 않은 코드 파일은 새 판으로, 직접 고친 파일은 남기고,
+양쪽이 고친 파일은 합친다. 같은 자리를 양쪽이 고쳤으면 아무것도 쓰지 않고 멈춘다. `wiki/ raw/
+index/ viewer/public/data/ tools/config/ bench/` 는 이 폴더의 데이터라 손대지 않는다. 자세한 순서는
+README 의 「업데이트」 절.
+
+- **기계가 둘 이상이면** 한 기계에서만 `llmwiki update` → `git push`, 다른 기계는 그 폴더에서
+  `git pull` 뒤 `llmwiki build`(검색 색인은 git 에 없다). 두 기계가 각자 update 하면 같은 갱신이
+  커밋 둘로 갈라진다. hook 을 새로 거는 판이면 그 기계에서 `scripts/install.sh --here` 를 한 번 더.
+- **충돌로 멈추면** 그 파일을 출력 첫 줄의 `기준` commit 으로 되돌려 커밋하고(`git checkout <기준> --
+  <파일>`) 다시 update 한 뒤, 필요하면 내 수정을 다시 넣는다.
+- **옛 판을 쓰던 사람**(이 폴더의 `scripts/llmwiki.py` 에 제자리 업데이트가 없는 판)은 [upgrade.md](upgrade.md)
+  를 따른다 — 설치한 폴더 그대로 갱신하고, AI 에이전트에게 읽혀 맡길 수 있다.
 
 경로는 어디여도 된다. 스크립트는 **자기 자신의 위치**에서 repo root 를 찾고,
 설치 시점에 해석한 절대경로만 설정 파일에 적는다. 소스 어디에도 저장소 경로가
@@ -32,9 +85,12 @@ POSIX 쪽은 `/bin/sh` 만 있으면 되고 bash 기능은 쓰지 않는다. mac
 ## Windows
 
 ```powershell
+git clone https://github.com/BrilliantTiger/llmwiki_json $HOME\llmwiki_json
+cd $HOME\llmwiki_json
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 -DryRun
-powershell -ExecutionPolicy Bypass -File scripts\install.ps1
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1            # 설치할 곳(-Here · -Path)·루틴·개인 저장소를 묻는다
 powershell -ExecutionPolicy Bypass -File scripts\install.ps1 verify
+powershell -ExecutionPolicy Bypass -File scripts\install.ps1 update     # = llmwiki update
 ```
 
 명령과 옵션은 POSIX 쪽과 같다. `-DryRun` 처럼 PowerShell 식으로도, `--dry-run`
@@ -143,11 +199,11 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 
 | 명령 | 하는 일 |
 |---|---|
-| `install` (기본) | hook · 전역 지침 · MCP · `llmwiki` 명령(shim)을 설치하고, `--data` 가 데이터 repo 면 그 CLAUDE.md·AGENTS.md·skills 를 만든다. 몇 번을 돌려도 결과가 같다 |
+| `install` (기본) | 설치할 곳을 정하고(현재 폴더 · 새 경로) hook(UserPromptSubmit · SessionStart) · 전역 지침 · MCP · `llmwiki` 명령(shim)을 설치한다. `--data` 로 데이터 repo 를 따로 두었으면 그 CLAUDE.md·AGENTS.md·skills 도 만든다. 몇 번을 돌려도 결과가 같다 |
 | `verify` | 설치 상태를 점검한다 — 코드 경로, 데이터 경로, lock 과 코드의 schema·code 판, 생성 지침이 최신인지, shim 이 이 코드를 가리키는지, hook·지침·Codex 신뢰, end-to-end 주입. 아무것도 고치지 않는다. 실패 시 exit 1 |
 | `uninstall` | 이 스크립트가 넣은 것만 되돌린다 (우리가 놓은 shim 포함) |
 | `doctor` | 감지 결과와 해석된 경로만 출력한다 |
-| `update` | `llmwiki update` 와 같다 — 코드 repo 를 ff-only 로 받고 데이터 repo 를 그 코드에 맞춘다(migrate · 지침 · build/validate/lint · lock · 커밋). `-y` 면 migrate 확인을 생략, `--dry-run` 은 아무것도 쓰지 않는다 |
+| `update` | `llmwiki update` 와 같다 — 한 폴더 설치는 공개 저장소의 새 코드를 이 폴더에 3-way 로 얹고 migrate · build/validate/lint · 커밋([위](#업데이트)). 데이터 repo 를 따로 둔 경우는 코드 repo 를 ff-only 로 받고 데이터 repo 를 맞춘다(지침 · lock 포함). `-y` 면 migrate 확인을 생략, `--dry-run` 은 아무것도 쓰지 않는다 |
 
 | 옵션 | 뜻 |
 |---|---|
@@ -163,7 +219,7 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 | `--mcp-name N` | MCP 서버 이름 (기본 `llmwiki`) |
 | `--here` | 현재 폴더(이 설치기가 든 폴더)에 설치한다 — 묻지 않는다 |
 | `--path DIR` | 새 경로 DIR 에 이 폴더를 복사(git clone)하고 거기서 설치한다. DIR 은 비어 있거나 없어야 한다. 둘 다 주지 않으면 install 이 묻고, `--yes`·비대화형이면 현재 폴더다 |
-| `--data DIR` | 데이터 repo (`llmwiki init`/`adopt` 로 만든 것). hook 명령과 MCP 등록에 `LLMWIKI_ROOT=DIR` 을, `llmwiki` shim 에 기본 데이터로 기록한다. 주지 않은 verify·update 는 shim 이 기록한 것을 본다. 데이터 root 를 붙이거나 바꾸면 hook 명령이 바뀌므로 Codex 는 다시 신뢰를 묻는다 |
+| `--data DIR` | (선택, 두 repo 운영) 데이터 repo (`llmwiki init`/`adopt` 로 만든 것). 한 폴더 설치에는 쓰지 않는다. hook 명령과 MCP 등록에 `LLMWIKI_ROOT=DIR` 을, `llmwiki` shim 에 기본 데이터로 기록한다. 주지 않은 verify·update 는 shim 이 기록한 것을 본다. 데이터 root 를 붙이거나 바꾸면 hook 명령이 바뀌므로 Codex 는 다시 신뢰를 묻는다 |
 | `--force` | 미지원 OS 나 미감지 클라이언트에서도 강행한다 |
 | `-q`, `--quiet` | 진행 로그를 줄인다 (클라이언트 실행 파일도 부르지 않는다) |
 | `--ingest-routine C` | 주기 루틴을 걸 에이전트 — `claude` · `codex` · `none`. 주지 않으면 설치 중에 물어본다 |
@@ -171,7 +227,7 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 | `--private-remote URL` | 개인 private 저장소를 remote 로 붙인다 |
 | `--gh-create NAME` | `gh` 로 private 저장소를 새로 만들어 붙인다 |
 | `--no-private` | 개인 저장소를 붙이지 않는다 (묻지도 않는다) |
-| `--remote-name N` | 그 remote 의 이름 (기본 `private`). `origin` 은 손대지 않는다 |
+| `--remote-name N` | 그 remote 의 이름 (기본 `private`). `origin` 은 손대지 않는다. 이미 붙은 개인 저장소 remote 가 있으면 그 이름을 쓴다 |
 | `-y`, `--yes` | 대화형 질문을 하지 않는다 — 플래그로 주지 않은 것은 건너뛴다 |
 
 질문은 TTY 에서만 한다. 파이프·CI 처럼 입력이 없는 자리에서는 묻지 않고 그냥
@@ -200,7 +256,7 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
    먼저 `build` · `validate` 후 커밋해 끝낸다. 우리가 남긴 것(에이전트를 부르기
    직전에 남긴 표시가 있는 것)만 손댄다. 이걸 안 하면 한 번의 실패가 이후의
    모든 차례를 '더러운 트리' 에서 세운다.
-1. **`git pull`** — `private` remote 가 있으면 ff-only 로 맞춘다. 루틴이 쓰는
+1. **`git pull`** — 개인 저장소 remote(설치 때 정한 것, 기본 `private`)가 있으면 ff-only 로 맞춘다. 루틴이 쓰는
    경로(`wiki/` · `index/` · `viewer/public/data` · `tools/config/groups.json`)가
    더럽거나 히스토리가 갈라졌으면 **여기서 멈춘다**. 그 밖의 경로를 사람이
    편집 중인 것은 막지 않는다.
@@ -214,7 +270,8 @@ scripts/install.sh [install|verify|uninstall|doctor|update] [옵션]
 4. `build` · `validate` — 깨졌으면 멈추지 않고 그 출력을 **에이전트에게 되돌려
    고치게 한 뒤** 다시 검증한다. 그래도 안 되면 커밋하지 않고 남겨 두는데,
    다음 차례가 이월분으로 다시 고쳐 본다.
-5. `wiki/` · `index/` · `viewer/public/data` 만 커밋하고 `private` 으로 push.
+5. `wiki/` · `index/` · `viewer/public/data` 만 커밋하고 개인 저장소 remote 로 push. 그 remote 가
+   공개 코드 저장소(`BrilliantTiger/llmwiki_json`)를 가리키면 push 하지 않고 알린다.
 
 소스가 이미 들어갔는지는 page 의 `raw_ref` 로 판정한다. 없으면 `history` 의
 note 와 `source_snapshot` 도 함께 본다 — 손으로 쓴 page 가 `raw_ref` 를 빠뜨려도
@@ -228,9 +285,15 @@ note 와 `source_snapshot` 도 함께 본다 — 손으로 쓴 page 가 `raw_ref
 
 ### 개인 저장소
 
-`origin` 은 코드 갱신을 받는 자리로 그대로 둔다. 개인 위키는 `private` remote
-하나를 더 붙여 그쪽으로만 민다. 이름이 같은 remote 가 이미 있고 다른 곳을
-가리키면 덮어쓰지 않고 경고만 한다.
+위키는 개인 private 저장소로만 민다. 공개 코드 저장소(`BrilliantTiger/llmwiki_json`)는 받기만 하는
+곳이다 — 설치기는 그 주소를 개인 저장소로 붙이지 않고(거부한다), update·루틴도 그리로 밀지 않는다.
+
+- 폴더의 git 에 이미 개인 저장소 remote 가 있으면(공개 코드 저장소가 아닌 remote) install 은 묻지
+  않고 그것을 쓴다. remote 가 여럿이면 지금 branch 가 따르는 것, 아니면 이름 순 첫 번째다. 루틴의
+  push 대상도 그 remote 가 된다.
+- 없으면 묻는다. `--private-remote URL`(이미 만든 저장소) · `--gh-create NAME`(`gh` 로 새로 만든다) 이면
+  묻지 않는다. remote 하나(기본 이름 `private`)를 더 붙이고 `origin` 은 손대지 않는다.
+- 이름이 같은 remote 가 이미 있고 다른 곳을 가리키면 덮어쓰지 않고 경고만 한다.
 
 ## 무엇을 건드리고 무엇을 건드리지 않는가
 
@@ -311,8 +374,11 @@ Codex 0.148 이상은 **새로 추가되거나 바뀐 hook 을 신뢰하기 전�
     3) t 를 눌러 신뢰한다
 ```
 
-신뢰 기록은 `~/.codex/config.toml` 의
-`[hooks.state."<hooks.json>:user_prompt_submit:<n>:0"]` 아래 `trusted_hash` 로 남는다.
+설치기는 같은 명령을 UserPromptSubmit 과 SessionStart 두 자리에 걸므로 Codex 는 hook 두 개를 묻는다 —
+둘 다 신뢰한다. 신뢰 기록은 `~/.codex/config.toml` 의
+`[hooks.state."<hooks.json>:user_prompt_submit:<n>:0"]` 과 `…:session_start:<n>:0` 아래 `trusted_hash` 로
+남고, `verify` 는 `codex.trust`(UserPromptSubmit, 실패로 친다)와 `codex.session-trust`(SessionStart,
+경고만)로 따로 보고한다.
 
 **hook 명령이 바뀌면 그 신뢰는 무효가 된다** — 인터프리터가 바뀌거나 clone 을
 옮기면 Codex 가 다시 묻는다. 해시 계산식은 공개돼 있지 않아 우리가 검산할 수는
@@ -334,21 +400,29 @@ Claude Code 에는 이런 게이트가 없어 설치 즉시 동작한다.
 ```
 
 ```
-ok   python: /usr/bin/python3
+ok   python: <...>/cpython-3.12-.../bin/python3.12
+ok   code: <REPO_ROOT>
 ok   repo: <REPO_ROOT>
+ok   layout: 한 폴더 설치 (코드·위키가 이 폴더에) — 갱신은 여기서 `llmwiki update`
+ok   shim: <HOME>/.local/bin/llmwiki → <REPO_ROOT>
 ok   corpus: 212 pages
 ok   codex.hook: <HOME>/.codex/hooks.json (group 1)
 ok   codex.hook-current: installed command matches this checkout
+ok   codex.session-hook: SessionStart (group 1) — 세션 시작·컴팩트 직후 always 목록
 ok   codex.guide: <HOME>/.codex/AGENTS.md
 ok   codex.trust: trusted
+ok   codex.session-trust: trusted
 ok   claude.hook: <HOME>/.claude/settings.json (group 1)
 ok   claude.hook-current: installed command matches this checkout
+ok   claude.session-hook: SessionStart (group 1) — 세션 시작·컴팩트 직후 always 목록
 ok   claude.guide: <HOME>/.claude/CLAUDE.md
+ok   search-index: <REPO_ROOT>/index/search.sqlite
 ok   probe-query: query='…' expect=page:…
 ok   probe-search: mode=index hits=5 expected_hit=True top=page:…
 ok   probe-injects: mode=index reason=index bytes=… expected_page=True block_lines=True
 ok   probe-silent-on-noise: 무관 질문에는 주입하지 않는다
 ok   fail-open: malformed stdin 은 조용히 통과한다
+ok   legacy-qmd-mcp: 없음
 모든 점검 통과
 ```
 
@@ -370,6 +444,12 @@ ok   fail-open: malformed stdin 은 조용히 통과한다
 `uv-설치함`(받아 옴) · `기존` · `설치함` 중 하나다.
 
 점검 항목의 뜻:
+
+- `corpus` · `probe-*` — 빈 위키(새로 설치한 상태)는 실패가 아니다. `corpus` 를 경고로 두고 내용 검사(`probe-query`
+  · `probe-search` · `probe-injects`)는 첫 ingest 뒤에 돈다.
+- `session-hook` — 같은 명령이 SessionStart 에도 걸렸는가. 세션 시작·재개·clear·컴팩트 직후에 고정 항목(always)을
+  다시 채운다.
+- 쓰지 않는 클라이언트(`--claude` · `--codex` 로 좁혔거나 한쪽만 설치됨)의 `codex.*` · `claude.*` FAIL 은 무시해도 된다.
 
 - `hook-current` — 설치된 명령이 **지금 이 checkout** 을 가리키는가. clone 을 옮기면
   `stale command` 로 뜨고, 다시 `install` 하면 된다.

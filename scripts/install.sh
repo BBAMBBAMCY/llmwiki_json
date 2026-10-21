@@ -101,8 +101,8 @@ llmwiki_json 자동 컨텍스트 주입 설치
   verify      설치 상태를 점검한다. 아무것도 바꾸지 않는다.
   uninstall   이 스크립트가 넣은 것만 되돌린다. 남의 설정은 남긴다.
   doctor      감지 결과와 해석된 경로만 출력한다.
-  update      코드 repo 를 받아(ff-only) 데이터 repo 를 맞춘다 — llmwiki update 와 같다
-              (migrate · 지침 · build/validate/lint · lock · 데이터 repo 커밋)
+  update      llmwiki update 와 같다 — 공개 저장소의 새 코드를 이 폴더에 얹는다(위키 commit 이 있어도 된다)
+              (migrate · build/validate/lint · 커밋. 두 repo 운영이면 코드 repo pull · 데이터 repo 맞춤)
 
 옵션
   -n, --dry-run       바뀔 내용만 보여주고 아무것도 쓰지 않는다 (네트워크도 안 탄다)
@@ -121,7 +121,7 @@ llmwiki_json 자동 컨텍스트 주입 설치
       --here          현재 폴더(이 설치기가 든 폴더)에 설치한다 — 묻지 않는다
       --path DIR      새 경로 DIR 에 이 폴더를 복사(git clone)하고 거기서 설치한다 — 묻지 않는다
                       둘 다 주지 않으면 install 이 어디에 설치할지 묻는다 (--yes·비대화형이면 현재 폴더)
-      --data DIR      데이터 repo (llmwiki init/adopt 로 만든 것). hook · MCP 에 LLMWIKI_ROOT 로,
+      --data DIR      (선택, 두 repo 운영) 데이터 repo (llmwiki init/adopt 로 만든 것). hook · MCP 에 LLMWIKI_ROOT 로,
                       llmwiki shim 에 기본 데이터로 기록한다
       --force         미지원 OS 나 미감지 클라이언트에서도 강행한다
   -q, --quiet         진행 로그를 줄인다
@@ -132,7 +132,8 @@ llmwiki_json 자동 컨텍스트 주입 설치
       --routine-interval S  주기(초, 기본 3600)
   -y, --yes           대화형 질문을 하지 않는다 (지정하지 않은 것은 건너뛴다, update 는 확인 없이 migrate)
 
-개인 저장소 — 이 clone 은 update 용으로 두고, 위키는 자기 private 저장소로 민다
+개인 저장소 — 위키는 자기 private 저장소로 민다 (공개 저장소 BrilliantTiger/llmwiki_json 은 받기만 한다)
+                      이미 붙은 개인 저장소 remote 가 있으면 묻지 않고 그것을 쓴다
       --private-remote URL  이미 만들어 둔 private 저장소를 remote 로 붙인다
       --gh-create NAME      gh 로 private 저장소를 새로 만들어 붙인다
       --no-private          개인 저장소를 붙이지 않는다 (묻지도 않는다)
@@ -877,7 +878,7 @@ uninstall_routine() {
 }
 
 # --------------------------------------------------------------- 개인 저장소
-# origin 은 코드 갱신을 받는 자리로 그대로 둔다. 개인 위키는 별도 remote 로만
+# 이미 개인 저장소 remote 가 있으면 그것을 쓴다. 없으면 별도 remote 를 붙인다 — origin 은 그대로, 위키는 개인 remote 로만
 # 밀어 올린다. 이미 붙어 있는 remote 는 이름이 같아도 덮어쓰지 않는다.
 private_choice() {
     case $PRIVATE in
