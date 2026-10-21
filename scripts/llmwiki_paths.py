@@ -42,6 +42,7 @@ VERSION_FILE = "VERSION"
 SCHEMA_VERSION = "1.1"
 
 # 데이터마다 다른 설정. 분리 모드에서는 `<data>/config/` 를 읽고, 없으면 `<code>/tools/config/` 의 기본값을 쓴다.
+# 한 폴더 설치는 자기 `tools/config/` 만 읽는다.
 # 어휘(tags)·대역 사전(glossary)은 위키마다 다른 내용이라 기본값이 없다 — 남의 위키 어휘로 검사하면 안 된다.
 CONFIG_DEFAULTS = {"groups.json": True, "context.json": True, "tags.json": False, "glossary.json": False}
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
@@ -138,7 +139,9 @@ class Layout:
         돌려준 경로가 없을 수도 있다 — 그때는 그 설정이 없는 것이다.
         """
         own = self.config_dir / name
-        if own.is_file() or not CONFIG_DEFAULTS.get(name, False):
+        # 기본값을 빌리는 것은 분리 모드의 데이터 repo 뿐이다. 한 폴더 설치에서 코드 쪽 tools/config 는 그 사용자의
+        # 설정이다 — 다른 root(다른 위키·시험용 임시 위키)가 그것을 읽으면 남의 문턱·고정 항목이 섞인다.
+        if own.is_file() or not self.split or not CONFIG_DEFAULTS.get(name, False):
             return own
         default = self.default_config_dir / name
         return default if default.is_file() else own
